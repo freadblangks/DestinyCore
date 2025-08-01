@@ -3,7 +3,7 @@ name: Windows x64
 on:
   push:
     branches:
-      - master
+      - test
   pull_request:
 
 jobs:
@@ -100,6 +100,6 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         path: ${{ steps.strings.outputs.build-output-dir }}/bin/${{ env.CMAKE_BUILD_TYPE }}
-        name: NordrassilCoreMainWin64VS2022
+        name: DestinyCoreMainWin64VS2022
         # Set a custom retention for artifacts
         #retention-days: 7
