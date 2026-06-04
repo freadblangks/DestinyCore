@@ -298,9 +298,6 @@ ObjectMgr::~ObjectMgr()
     for (DungeonEncounterContainer::iterator itr =_dungeonEncounterStore.begin(); itr != _dungeonEncounterStore.end(); ++itr)
         for (DungeonEncounterList::iterator encounterItr = itr->second.begin(); encounterItr != itr->second.end(); ++encounterItr)
             delete *encounterItr;
-
-    for (AccessRequirementContainer::iterator itr = _accessRequirementStore.begin(); itr != _accessRequirementStore.end(); ++itr)
-        delete itr->second;
 }
 
 void ObjectMgr::AddLocaleString(std::string&& value, LocaleConstant localeConstant, std::vector<std::string>& data)
@@ -576,8 +573,8 @@ void ObjectMgr::LoadCreatureTemplateAddons()
     uint32 oldMSTime = getMSTime();
 
     _creatureTemplateAddonStore.clear(); // needed for reload
-    //                                                 0       1       2      3       4       5        6             7              8                  9              10
-    QueryResult result = WorldDatabase.Query("SELECT entry, path_id, mount, bytes1, bytes2, emote, aiAnimKit, movementAnimKit, meleeAnimKit, visibilityDistanceType, auras FROM creature_template_addon");
+    //                                                 0       1       2      3       4       5        6             7              8                  9              10    11
+    QueryResult result = WorldDatabase.Query("SELECT entry, path_id, mount, bytes1, bytes2, emote, aiAnimKit, movementAnimKit, meleeAnimKit, visibilityDistanceType, auras, WanderProfileId FROM creature_template_addon");
 
     if (!result)
     {
@@ -609,6 +606,7 @@ void ObjectMgr::LoadCreatureTemplateAddons()
         creatureAddon.movementAnimKit           = fields[7].GetUInt16();
         creatureAddon.meleeAnimKit              = fields[8].GetUInt16();
         creatureAddon.visibilityDistanceType    = VisibilityDistanceType(fields[9].GetUInt8());
+        creatureAddon.wanderProfileId           = fields[11].GetUInt32();
 
         Tokenizer tokens(fields[10].GetString(), ' ');
         uint8 i = 0;
@@ -6130,6 +6128,60 @@ void ObjectMgr::ReturnOrDeleteOldMails(bool serverUp)
     TC_LOG_INFO("server.loading", ">> Processed %u expired mails: %u deleted and %u returned in %u ms", deletedCount + returnedCount, deletedCount, returnedCount, GetMSTimeDiffToNow(oldMSTime));
 }
 
+void ObjectMgr::LoadQuestActions()
+{
+    uint32 oldMSTime = getMSTime();
+
+    _questActions.clear();
+
+    //                                               0        1     2               3        4               5                 6
+    QueryResult result = WorldDatabase.Query("SELECT QuestID, Type, ObjectiveIndex, SpellId, ConversationId, UpdatePhaseShift, UpdateZoneAuras FROM quest_action");
+    if (!result)
+    {
+        TC_LOG_INFO("server.loading", ">> Loaded 0 quest actions. DB table `quest_action` is empty.");
+        return;
+    }
+
+    uint32 count = 0;
+    do
+    {
+        Field* fields = result->Fetch();
+
+        uint32 questId = fields[0].GetUInt32();
+        if (!GetQuestTemplate(questId))
+        {
+            TC_LOG_ERROR("sql.sql", "Table `quest_action` has data for non-existing quest %u, skipped.", questId);
+            continue;
+        }
+
+        QuestAction action;
+        action.Type             = fields[1].GetUInt8();
+        action.ObjectiveIndex   = fields[2].GetUInt8();
+        action.SpellId          = fields[3].GetUInt32();
+        action.ConversationId   = fields[4].GetUInt32();
+        action.UpdatePhaseShift = fields[5].GetBool();
+        action.UpdateZoneAuras  = fields[6].GetBool();
+
+        if (action.Type >= QUEST_ACTION_MAX)
+        {
+            TC_LOG_ERROR("sql.sql", "Table `quest_action` has invalid Type %u for quest %u, skipped.", uint32(action.Type), questId);
+            continue;
+        }
+
+        if (action.SpellId && !sSpellMgr->GetSpellInfo(action.SpellId))
+        {
+            TC_LOG_ERROR("sql.sql", "Table `quest_action` references non-existing spell %u for quest %u, removed.", action.SpellId, questId);
+            action.SpellId = 0;
+        }
+
+        _questActions[questId].push_back(action);
+        ++count;
+    }
+    while (result->NextRow());
+
+    TC_LOG_INFO("server.loading", ">> Loaded %u quest actions in %u ms", count, GetMSTimeDiffToNow(oldMSTime));
+}
+
 void ObjectMgr::LoadQuestAreaTriggers()
 {
     uint32 oldMSTime = getMSTime();
@@ -6417,7 +6469,7 @@ uint32 ObjectMgr::GetNearestTaxiNode(float x, float y, float z, uint32 mapid, ui
         uint32 submask = 1 << ((node->ID - 1) % 8);
 
         // skip not taxi network nodes
-        if ((sTaxiNodesMask[field] & submask) == 0)
+        if (field >= sTaxiNodesMask.size() || (sTaxiNodesMask[field] & submask) == 0)
             continue;
 
         float dist2 = (node->Pos.X - x)*(node->Pos.X - x) + (node->Pos.Y - y)*(node->Pos.Y - y) + (node->Pos.Z - z)*(node->Pos.Z - z);
@@ -6728,14 +6780,6 @@ AreaTriggerTeleportStruct const* ObjectMgr::GetAreaTrigger(int64 trigger) const
     return nullptr;
 }
 
-AccessRequirement const* ObjectMgr::GetAccessRequirement(uint32 mapid, Difficulty difficulty) const
-{
-    AccessRequirementContainer::const_iterator itr = _accessRequirementStore.find(MAKE_PAIR64(mapid, difficulty));
-    if (itr != _accessRequirementStore.end())
-        return itr->second;
-    return nullptr;
-}
-
 bool ObjectMgr::AddGraveYardLink(uint32 id, uint32 zoneId, uint32 team, bool persist /*= true*/)
 {
     if (FindGraveYardData(id, zoneId))
@@ -6870,114 +6914,6 @@ void ObjectMgr::LoadAreaTriggerTeleports()
     } while (result->NextRow());
 
     TC_LOG_INFO("server.loading", ">> Loaded %u area trigger teleport definitions in %u ms", count, GetMSTimeDiffToNow(oldMSTime));
-}
-
-void ObjectMgr::LoadAccessRequirements()
-{
-    uint32 oldMSTime = getMSTime();
-
-    if (!_accessRequirementStore.empty())
-    {
-        for (AccessRequirementContainer::iterator itr = _accessRequirementStore.begin(); itr != _accessRequirementStore.end(); ++itr)
-            delete itr->second;
-
-        _accessRequirementStore.clear();                                  // need for reload case
-    }
-
-    //                                                 0       1           2          3        4      5       6               7                8                   9
-    QueryResult result = WorldDatabase.Query("SELECT mapid, difficulty, level_min, level_max, item, item2, quest_done_A, quest_done_H, completed_achievement, quest_failed_text FROM access_requirement");
-
-    if (!result)
-    {
-        TC_LOG_INFO("server.loading", ">> Loaded 0 access requirement definitions. DB table `access_requirement` is empty.");
-        return;
-    }
-
-    uint32 count = 0;
-
-    do
-    {
-        Field* fields = result->Fetch();
-
-        uint32 mapid = fields[0].GetUInt32();
-        if (!sMapStore.LookupEntry(mapid))
-        {
-            TC_LOG_ERROR("sql.sql", "Map %u referenced in `access_requirement` does not exist, skipped.", mapid);
-            continue;
-        }
-
-        uint32 difficulty = fields[1].GetUInt8();
-        if (!sDB2Manager.GetMapDifficultyData(mapid, Difficulty(difficulty)))
-        {
-            TC_LOG_ERROR("sql.sql", "Map %u referenced in `access_requirement` does not have difficulty %u, skipped", mapid, difficulty);
-            continue;
-        }
-
-        uint64 requirement_ID = MAKE_PAIR64(mapid, difficulty);
-
-        AccessRequirement* ar   = new AccessRequirement();
-        ar->levelMin            = fields[2].GetUInt8();
-        ar->levelMax            = fields[3].GetUInt8();
-        ar->item                = fields[4].GetUInt32();
-        ar->item2               = fields[5].GetUInt32();
-        ar->quest_A             = fields[6].GetUInt32();
-        ar->quest_H             = fields[7].GetUInt32();
-        ar->achievement         = fields[8].GetUInt32();
-        ar->questFailedText     = fields[9].GetString();
-
-        if (ar->item)
-        {
-            ItemTemplate const* pProto = GetItemTemplate(ar->item);
-            if (!pProto)
-            {
-                TC_LOG_ERROR("sql.sql", "Key item %u does not exist for map %u difficulty %u, removing key requirement.", ar->item, mapid, difficulty);
-                ar->item = 0;
-            }
-        }
-
-        if (ar->item2)
-        {
-            ItemTemplate const* pProto = GetItemTemplate(ar->item2);
-            if (!pProto)
-            {
-                TC_LOG_ERROR("sql.sql", "Second item %u does not exist for map %u difficulty %u, removing key requirement.", ar->item2, mapid, difficulty);
-                ar->item2 = 0;
-            }
-        }
-
-        if (ar->quest_A)
-        {
-            if (!GetQuestTemplate(ar->quest_A))
-            {
-                TC_LOG_ERROR("sql.sql", "Required Alliance Quest %u not exist for map %u difficulty %u, remove quest done requirement.", ar->quest_A, mapid, difficulty);
-                ar->quest_A = 0;
-            }
-        }
-
-        if (ar->quest_H)
-        {
-            if (!GetQuestTemplate(ar->quest_H))
-            {
-                TC_LOG_ERROR("sql.sql", "Required Horde Quest %u not exist for map %u difficulty %u, remove quest done requirement.", ar->quest_H, mapid, difficulty);
-                ar->quest_H = 0;
-            }
-        }
-
-        if (ar->achievement)
-        {
-            if (!sAchievementStore.LookupEntry(ar->achievement))
-            {
-                TC_LOG_ERROR("sql.sql", "Required Achievement %u not exist for map %u difficulty %u, remove quest done requirement.", ar->achievement, mapid, difficulty);
-                ar->achievement = 0;
-            }
-        }
-
-        _accessRequirementStore[requirement_ID] = ar;
-        ++count;
-
-    } while (result->NextRow());
-
-    TC_LOG_INFO("server.loading", ">> Loaded %u access requirement definitions in %u ms", count, GetMSTimeDiffToNow(oldMSTime));
 }
 
 /*
@@ -9381,15 +9317,6 @@ uint32 ObjectMgr::GetCreatureDefaultTrainer(uint32 creatureId) const
     return 0;
 }
 
-uint32 ObjectMgr::GetAdventureMapUIByCreature(uint32 creatureId) const
-{
-    auto itr = _adventureMapUIByCreature.find(creatureId);
-    if (itr != _adventureMapUIByCreature.end())
-        return itr->second;
-
-    return 0;
-}
-
 void ObjectMgr::AddVendorItem(uint32 entry, VendorItem const& vItem, bool persist /*= true*/)
 {
     VendorItemData& vList = _cacheVendorItemStore[entry];
@@ -10327,41 +10254,11 @@ void ObjectMgr::LoadRaceAndClassExpansionRequirements()
     oldMSTime = getMSTime();
     _classExpansionRequirementStore.clear();
 
-    //                                   0        1
-    result = WorldDatabase.Query("SELECT classID, expansion FROM `class_expansion_requirement`");
+    // Every class is available regardless of account expansion.
+    for (ChrClassesEntry const* classEntry : sChrClassesStore)
+        _classExpansionRequirementStore[classEntry->ID] = 0;
 
-    if (result)
-    {
-        uint32 count = 0;
-        do
-        {
-            Field* fields = result->Fetch();
-
-            uint8 classID = fields[0].GetInt8();
-            uint8 expansion = fields[1].GetInt8();
-
-            ChrClassesEntry const* classEntry = sChrClassesStore.LookupEntry(classID);
-            if (!classEntry)
-            {
-                TC_LOG_ERROR("sql.sql", "Class %u defined in `class_expansion_requirement` does not exists, skipped.", classID);
-                continue;
-            }
-
-            if (expansion >= MAX_EXPANSIONS)
-            {
-                TC_LOG_ERROR("sql.sql", "Class %u defined in `class_expansion_requirement` has incorrect expansion %u, skipped.", classID, expansion);
-                continue;
-            }
-
-            _classExpansionRequirementStore[classID] = expansion;
-
-            ++count;
-        }
-        while (result->NextRow());
-        TC_LOG_INFO("server.loading", ">> Loaded %u class expansion requirements in %u ms.", count, GetMSTimeDiffToNow(oldMSTime));
-    }
-    else
-        TC_LOG_INFO("server.loading", ">> Loaded 0 class expansion requirements. DB table `class_expansion_requirement` is empty.");
+    TC_LOG_INFO("server.loading", ">> Loaded " SZFMTD " class expansion requirements in %u ms.", _classExpansionRequirementStore.size(), GetMSTimeDiffToNow(oldMSTime));
 }
 
 void ObjectMgr::LoadRealmNames()
@@ -10541,6 +10438,7 @@ void ObjectMgr::LoadSceneTemplates()
         sceneTemplate.ScenePackageId    = fields[2].GetUInt32();
         sceneTemplate.ScriptId          = sObjectMgr->GetScriptId(fields[3].GetCString());
 
+        ++count;
     } while (templates->NextRow());
 
     TC_LOG_INFO("server.loading", ">> Loaded %u scene templates in %u ms.", count, GetMSTimeDiffToNow(oldMSTime));
@@ -10615,46 +10513,6 @@ void ObjectMgr::LoadQuestTasks()
             }
         }
     }
-}
-
-void ObjectMgr::LoadAdventureMapUI()
-{
-    uint32 oldMSTime = getMSTime();
-
-    _adventureMapUIByCreature.clear(); // needed for reload case
-
-    //                                               0           1
-    QueryResult result = WorldDatabase.Query("SELECT CreatureId, uiMapId FROM adventure_map_ui");
-
-    if (!result)
-    {
-        TC_LOG_INFO("server.loading", ">> Loaded 0 adventure mapui by creature. DB table `adventure_map_ui` is empty.");
-        return;
-    }
-
-    uint32 count = 0;
-
-    do
-    {
-        ++count;
-
-        Field* fields = result->Fetch();
-
-        uint32 creatureId = fields[0].GetUInt32();
-        uint32 mapUiId = fields[1].GetUInt32();
-
-        CreatureTemplate const* cInfo = GetCreatureTemplate(creatureId);
-        if (!cInfo)
-        {
-            TC_LOG_ERROR("sql.sql", "Creature template (Entry: %u) does not exist but has a record in `adventure_map_ui`", creatureId);
-            continue;
-        }
-
-        _adventureMapUIByCreature[creatureId] = mapUiId;
-
-    } while (result->NextRow());
-
-    TC_LOG_INFO("server.loading", ">> Loaded %u adventure mapui by creature in %u ms", count, GetMSTimeDiffToNow(oldMSTime));
 }
 
 void ObjectMgr::LoadPlayerChoices()

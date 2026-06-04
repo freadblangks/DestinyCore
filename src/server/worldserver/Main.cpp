@@ -42,6 +42,7 @@
 #include "ProcessPriority.h"
 #include "RASession.h"
 #include "RealmList.h"
+#include "ModulesScriptLoader.h"
 #include "ScriptLoader.h"
 #include "ScriptMgr.h"
 #include "ScriptReloadMgr.h"
@@ -59,9 +60,6 @@
 #include <google/protobuf/stubs/common.h>
 #include <iostream>
 #include <csignal>
-#include "PlayerBotMgr.h"
-#include "ToolSocket.h"
-#include "ToolSocketMgr.h"
 #include "PathfindingMgr.h"
 
 #ifdef WITH_CPR
@@ -99,7 +97,7 @@ public:
 
     static void Start(std::shared_ptr<FreezeDetector> const& freezeDetector)
     {
-        freezeDetector->_timer.expires_from_now(boost::posix_time::seconds(5));
+        freezeDetector->_timer.expires_after(Seconds(5));
         freezeDetector->_timer.async_wait(std::bind(&FreezeDetector::Handler, std::weak_ptr<FreezeDetector>(freezeDetector), std::placeholders::_1));
     }
 
@@ -121,14 +119,14 @@ public:
 
     static void Start(std::shared_ptr<WorldToDiscord> const& worldToDiscord)
     {
-        worldToDiscord->_timer.expires_from_now(boost::posix_time::seconds(5));
+        worldToDiscord->_timer.expires_after(Seconds(5));
         worldToDiscord->_timer.async_wait(std::bind(&WorldToDiscord::Handler, std::weak_ptr<WorldToDiscord>(worldToDiscord), std::placeholders::_1));
     }
 
     static void Handler(std::weak_ptr<WorldToDiscord> worldToDiscordRed, boost::system::error_code const& error);
 
 private:
-    boost::asio::deadline_timer _timer;
+    Trinity::Asio::DeadlineTimer _timer;
 };
 #endif
 
@@ -182,6 +180,10 @@ extern int main(int argc, char** argv)
     sLog->RegisterAppender<AppenderDB>();
     // If logs are supposed to be handled async then we need to pass the IoContext into the Log singleton
     sLog->Initialize(sConfigMgr->GetBoolDefault("Log.Async.Enable", false) ? ioContext.get() : nullptr);
+
+    // Merge any module config placed next to the worldserver config. Done after
+    // the logger is up so the loaded files are reported.
+    sConfigMgr->LoadModulesConfigs();
 
     Destiny::Banner::Show("worldserver-daemon",
         [](char const* text)
@@ -274,6 +276,7 @@ extern int main(int argc, char** argv)
     });
 
     sScriptMgr->SetScriptLoader(AddScripts);
+    sScriptMgr->SetModulesLoader(AddModulesScripts);
     std::shared_ptr<void> sScriptMgrHandle(nullptr, [](void*)
     {
         sScriptMgr->Unload();
@@ -335,7 +338,6 @@ extern int main(int argc, char** argv)
         sWorld->UpdateSessions(1);                             // real players unload required UpdateSessions call
 
         sWorldSocketMgr.StopNetwork();
-        sToolSocketMgr.StopNetwork();
 
         ///- Clean database before leaving
         ClearOnlineAccounts();
@@ -380,7 +382,6 @@ extern int main(int argc, char** argv)
 
     sScriptMgr->OnStartup();
 
-    sPlayerBotMgr->UpAllPlayerBotSession();
     sFPMgr->InitializePFMgr();
 
     WorldUpdateLoop();
@@ -529,7 +530,7 @@ void FreezeDetector::Handler(std::weak_ptr<FreezeDetector> freezeDetectorRef, bo
                 ABORT();
             }
 
-            freezeDetector->_timer.expires_from_now(boost::posix_time::seconds(1));
+            freezeDetector->_timer.expires_after(Seconds(1));
             freezeDetector->_timer.async_wait(std::bind(&FreezeDetector::Handler, freezeDetectorRef, std::placeholders::_1));
         }
     }
@@ -617,7 +618,7 @@ void WorldToDiscord::Handler(std::weak_ptr<WorldToDiscord> worldToDiscordRef, bo
                 }
             }
 
-            worldToDiscord->_timer.expires_from_now(boost::posix_time::seconds(2));
+            worldToDiscord->_timer.expires_after(Seconds(2));
             worldToDiscord->_timer.async_wait(std::bind(&WorldToDiscord::Handler, worldToDiscordRef, std::placeholders::_1));
         }
     }

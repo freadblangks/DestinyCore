@@ -35,6 +35,9 @@
 #include "WorldSession.h"
 #include "Opcodes.h"
 #include "MiscPackets.h"
+#ifdef ELUNA
+#include "LuaEngine.h"
+#endif
 
 MapManager::MapManager()
     : _nextInstanceId(0), _scheduledScripts(0)
@@ -226,7 +229,7 @@ Map::EnterState MapManager::PlayerCannotEnter(uint32 mapid, Player* player, bool
     }
 
     //Other requirements
-    if (player->Satisfy(sObjectMgr->GetAccessRequirement(mapid, targetDifficulty), mapid, true))
+    if (player->Satisfy(mapid, targetDifficulty, true))
         return Map::CAN_ENTER;
     else
         return Map::CANNOT_ENTER_UNSPECIFIED_REASON;
@@ -397,4 +400,15 @@ void MapManager::FreeInstanceId(uint32 instanceId)
         SetNextInstanceId(instanceId);
 
     _instanceIds[instanceId] = false;
+#ifdef ELUNA
+    for (MapMapType::iterator itr = i_maps.begin(); itr != i_maps.end(); ++itr)
+    {
+        if (!(*itr).second->Instanceable())
+            continue;
+
+        Map* iMap = (*itr).second->ToMapInstanced()->FindInstanceMap(instanceId);
+        if (iMap && iMap->GetEluna())
+            iMap->GetEluna()->FreeInstanceId(instanceId);
+    }
+#endif
 }

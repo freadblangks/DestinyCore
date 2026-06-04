@@ -27,7 +27,6 @@
 #include "ArchaeologyMgr.h"
 #include "Area.h"
 #include "AreaTriggerDataStore.h"
-#include "AuctionHouseBot.h"
 #include "AuctionHouseMgr.h"
 #include "AuthenticationPackets.h"
 #include "BattlefieldMgr.h"
@@ -47,6 +46,7 @@
 #include "ConversationDataStore.h"
 #include "CreatureAIRegistry.h"
 #include "CreatureGroups.h"
+#include "WanderProfileMgr.h"
 #include "CreatureTextMgr.h"
 #include "DatabaseEnv.h"
 #include "DisableMgr.h"
@@ -93,21 +93,19 @@
 #include "VMapManager2.h"
 #include "WardenCheckMgr.h"
 #include "WaypointManager.h"
-#include "WaypointMovementGenerator.h"
 #include "WeatherMgr.h"
+#ifdef ELUNA
+#include "LuaEngine.h"
+#include "ElunaLoader.h"
+#include "ElunaConfig.h"
+#endif
 #include "WorldQuestMgr.h"
 #include "WorldSession.h"
 #include "WorldSocket.h"
 #include "PetBattleSystem.h"
-#include "PlayerBotMgr.h"
-#include "FieldBotMgr.h"
-#include "PlayerBotTalkMgr.h"
-#include "AIWaypointsMgr.h"
 #include "PathfindingMgr.h"
-#include "ToolSocket.h"
 #include "SHA1.h"
 #include <boost/algorithm/string.hpp>
-#include "CustomTalkMenu.h"
 
 TC_GAME_API std::atomic<bool> World::m_stopEvent(false);
 TC_GAME_API uint8 World::m_ExitCode = SHUTDOWN_EXIT_CODE;
@@ -137,8 +135,6 @@ uint32 World::GetOnlineRealPlayerCount()
     {
         WorldSession* pSession = itr->second;
         if (!pSession)
-            continue;
-        if (pSession->IsBotSession())
             continue;
         ++count;
     }
@@ -1721,9 +1717,6 @@ void World::LoadConfigSettings(bool reload)
 
     m_bool_configs[CONFIG_IP_BASED_ACTION_LOGGING] = sConfigMgr->GetBoolDefault("Allow.IP.Based.Action.Logging", false);
 
-    // AHBot
-    m_int_configs[CONFIG_AHBOT_UPDATE_INTERVAL] = sConfigMgr->GetIntDefault("AuctionHouseBot.Update.Interval", 20);
-
     // Black Market
     m_bool_configs[CONFIG_BLACKMARKET_ENABLED] = sConfigMgr->GetBoolDefault("BlackMarket.Enabled", true);
 
@@ -1823,6 +1816,25 @@ void World::SetInitialWorldSettings()
     if (!sObjectMgr->LoadTrinityStrings())
         exit(1);                                            // Error message displayed in function already
 
+#ifdef ELUNA
+    ///- Initialize Lua Engine
+    TC_LOG_INFO("server.loading", "Loading Eluna config...");
+    sElunaConfig->Initialize();
+
+    ///- Initialize Lua Engine
+    if (sElunaConfig->IsElunaEnabled())
+    {
+        TC_LOG_INFO("server.loading", "Loading Lua scripts...");
+        sElunaLoader->LoadScripts();
+
+        if (sElunaConfig->GetConfig(CONFIG_ELUNA_SCRIPT_RELOADER))
+        {
+            TC_LOG_INFO("server.loading", "Loading Eluna script reloader...");
+            sElunaLoader->InitializeFileWatcher();
+        }
+    }
+#endif
+
     ///- Update the realm entry in the database with the realm type from the config file
     //No SQL injection as values are treated as integers
 
@@ -1863,20 +1875,6 @@ void World::SetInitialWorldSettings()
 
     if (VMAP::VMapManager2* vmmgr2 = dynamic_cast<VMAP::VMapManager2*>(VMAP::VMapFactory::createOrGetVMapManager()))
         vmmgr2->InitializeThreadUnsafe(mapData);
-
-    TC_LOG_INFO("server.loading", "Loading Player bot base store...");
-    sPlayerBotMgr->LoadPlayerBotBaseInfo();
-    sPlayerBotTalkMgr->InitializeTalkText();
-    sPlayerBotTalkMgr->InitializeStory();
-
-    TC_LOG_INFO("server.loading", "Loading AI Way points...");
-    if (!sAIWPMgr->LoadAIWaypoints())
-    {
-        exit(0);
-        return;
-    }
-    TC_LOG_INFO("server.loading", "Loading Custom talk menu...");
-    sCustomTalkMenu->Initialize();
 
     MMAP::MMapManager* mmmgr = MMAP::MMapFactory::createOrGetMMapManager();
     mmmgr->InitializeThreadUnsafe(mapData);
@@ -2084,6 +2082,9 @@ void World::SetInitialWorldSettings()
     TC_LOG_INFO("server.loading", "Loading Quests...");
     sObjectMgr->LoadQuests();                                    // must be loaded after DBCs, creature_template, item_template, gameobject tables
 
+    TC_LOG_INFO("server.loading", "Loading Quest Actions...");
+    sObjectMgr->LoadQuestActions();                              // must be after quest load
+
     TC_LOG_INFO("server.loading", "Checking Quest Disables");
     DisableMgr::CheckQuestDisables();                           // must be after loading quests
 
@@ -2120,8 +2121,6 @@ void World::SetInitialWorldSettings()
     TC_LOG_INFO("server.loading", "Loading AreaTrigger definitions...");
     sObjectMgr->LoadAreaTriggerTeleports();
 
-    TC_LOG_INFO("server.loading", "Loading Access Requirements...");
-    sObjectMgr->LoadAccessRequirements();                        // must be after item template load
 
     TC_LOG_INFO("server.loading", "Loading Quest Area Triggers...");
     sObjectMgr->LoadQuestAreaTriggers();                         // must be after LoadQuests
@@ -2290,6 +2289,9 @@ void World::SetInitialWorldSettings()
     TC_LOG_INFO("server.loading", "Loading Creature Formations...");
     sFormationMgr->LoadCreatureFormations();
 
+    TC_LOG_INFO("server.loading", "Loading Wander Profiles...");
+    sWanderProfileMgr->LoadAll();
+
     TC_LOG_INFO("server.loading", "Loading World States...");              // must be loaded before battleground, outdoor PvP and conditions
     LoadWorldStates();
 
@@ -2364,6 +2366,15 @@ void World::SetInitialWorldSettings()
     TC_LOG_INFO("server.loading", "Loading Archaeology Digsites Limits...");
     sArchaeologyMgr->LoadDigsiteLimits();
 
+#ifdef ELUNA
+    if (sElunaConfig->IsElunaEnabled())
+    {
+        TC_LOG_INFO("server.loading", "Starting Eluna world state...");
+        _elunaInfo = { ElunaInfoKey::MakeGlobalKey(0) };
+        sElunaMgr->Create(nullptr, _elunaInfo);
+    }
+#endif
+
     TC_LOG_INFO("server.loading", "Initializing Scripts...");
     sScriptMgr->Initialize();
     sScriptMgr->OnConfigLoad(false);                                // must be done after the ScriptMgr has been properly initialized
@@ -2380,135 +2391,12 @@ void World::SetInitialWorldSettings()
     TC_LOG_INFO("server.loading", "Loading Quest task...");
     sObjectMgr->LoadQuestTasks();
 
-    TC_LOG_INFO("server.loading", "Loading Adventure Map UI...");
-    sObjectMgr->LoadAdventureMapUI();
 
     TC_LOG_INFO("server.loading", "Loading Zones script names...");
     sObjectMgr->LoadZoneScriptNames();
 
     TC_LOG_INFO("server.loading", "Loading Garrison script names...");
     sObjectMgr->LoadGarrisonScriptNames();
-
-    if (1 == 1)
-    {
-        // TC_LOG_ERROR("server.loading", "Gtools\n");
-        Json::Reader jsonReader;
-        Json::Value jsonValue;
-        TC_LOG_INFO("server.loading", "load Gtools\n");
-        Json::Value jsonScoreRate = sConfigMgr->GetFloatDefault("bgscorerate", 1.0f);
-
-        float bgScoreReate = sConfigMgr->GetFloatDefault("bgscorerate", 1.0f);
-        if (bgScoreReate < 0.2f)
-            bgScoreReate = 0.2f;
-        if (bgScoreReate > 8.0f)
-            bgScoreReate = 8.0f;
-        BotUtility::BattlegroundScoreRate = bgScoreReate;
-
-        Json::Value jsonAutoSetting = sConfigMgr->GetIntDefault("auto_setting", 1);
-        int autoSetting = sConfigMgr->GetIntDefault("auto_setting", 1);
-        BotUtility::BotCanSettingToMaster = (autoSetting != 0) ? true : false;
-
-        Json::Value jsonMaxLevel = sConfigMgr->GetIntDefault("max_level", 6);
-        int maxLevel = sConfigMgr->GetIntDefault("max_level", 6);
-        if (maxLevel >= 0 && maxLevel < 6)
-        {
-            uint32 realLevel = 110;
-            switch (maxLevel)
-            {
-            case 0:
-                realLevel = 60;
-                break;
-            case 1:
-                realLevel = 70;
-                break;
-            case 2:
-                realLevel = 80;
-                break;
-            case 3:
-                realLevel = 85;
-                break;
-            case 4:
-                realLevel = 90;
-                break;
-            case 5:
-                realLevel = 100;
-                break;
-            case 6:
-                realLevel = 110;
-                break;
-            }
-            sWorld->setIntConfig(CONFIG_MAX_PLAYER_LEVEL, realLevel);
-        }
-
-        Json::Value jsonMaxDungeon = sConfigMgr->GetIntDefault("maxdungeon", 0);
-        int maxDungeon = sConfigMgr->GetIntDefault("maxdungeon", 0);
-        BotGroupAI::PVE_MAX_DUNGEON = (maxDungeon != 0) ? true : false;
-        Json::Value jsonDriving = sConfigMgr->GetIntDefault("driving", 1);
-        int driving = sConfigMgr->GetIntDefault("driving", 1);
-        BotGroupAI::PVE_DRIVING = (driving != 0) ? true : false;
-
-        Json::Value jsonPull = sConfigMgr->GetIntDefault("pull", 1);
-        int pull = sConfigMgr->GetIntDefault("pull", 1);
-        BotGroupAI::PVE_PULL = (pull != 0) ? true : false;
-
-        Json::Value jsonAddion = sConfigMgr->GetFloatDefault("addion", 1.0f);
-        float modifyAddion = sConfigMgr->GetFloatDefault("addion", 1.0f);
-        if (modifyAddion < 0.5f)
-            modifyAddion = 0.5f;
-        if (modifyAddion > 15.0f)
-            modifyAddion = 15.0f;
-        BotUtility::DungeonBotDamageModify = modifyAddion;
-
-        Json::Value jsonEndure = sConfigMgr->GetFloatDefault("endure", 1.0f);
-        modifyAddion = sConfigMgr->GetFloatDefault("endure", 1.0f);
-        if (modifyAddion < 0.5f)
-            modifyAddion = 0.5f;
-        if (modifyAddion > 15.0f)
-            modifyAddion = 15.0f;
-        BotUtility::DungeonBotEndureModify = modifyAddion;
-
-        Json::Value jsonRevive = sConfigMgr->GetIntDefault("auto_revive", 0);
-        int revive = sConfigMgr->GetIntDefault("auto_revive", 0);
-        BotUtility::BotCanForceRevive = (revive != 0) ? true : false;
-
-        Json::Value jsonFieldCreature = sConfigMgr->GetIntDefault("field_creature", 1);
-        int fCreature = sConfigMgr->GetIntDefault("field_creature", 1);
-        FieldBotMgr::FIELDBOT_CREATURE = (fCreature != 0) ? true : false;
-
-        Json::Value jsonFieldDriving = sConfigMgr->GetIntDefault("field_driving", 0);
-        int fDriving = sConfigMgr->GetIntDefault("field_driving", 0);
-        FieldBotMgr::FIELDBOT_DRIVING = (fDriving != 0) ? true : false;
-
-        Json::Value jsonWarfareSize = sConfigMgr->GetIntDefault("warfare_size", 0);
-        int warfareSize = sConfigMgr->GetIntDefault("warfare_size", 0);
-        if (warfareSize >= 0 && warfareSize <= 3)
-            FieldBotMgr::FIELDWARFARE_SIZE = warfareSize;
-
-        Json::Value jsonDiminishing = sConfigMgr->GetIntDefault("diminishing", 1);
-        BotUtility::ControllSpellDiminishing = (sConfigMgr->GetIntDefault("diminishing", 1) != 0) ? true : false;
-
-
-        Json::Value jsonCanBreakControll = sConfigMgr->GetIntDefault("canbreak_controll", 1);
-        BotUtility::ControllSpellFromDmgBreak = (sConfigMgr->GetIntDefault("canbreak_controll", 1) != 0) ? true : false;
-
-        //Json::Value jsonAutoBuildArena = sConfigMgr->GetIntDefault("auto_buildarena", 1);
-        //ArenaTeamMgr::g_AutoBuildArenaTeam = (sConfigMgr->GetIntDefault("auto_buildarena", 1) != 0) ? true : false;
-
-        Json::Value jsonDownBotArena = sConfigMgr->GetIntDefault("downbotarena", 1);
-        BotUtility::DownBotArenaTeam = (sConfigMgr->GetIntDefault("downbotarena", 1) != 0) ? true : false;
-
-        Json::Value jsonArenaIsHell = sConfigMgr->GetIntDefault("arenahell", 0);
-        BotUtility::ArenaIsHell = (sConfigMgr->GetIntDefault("arenahell", 0) != 0) ? true : false;
-
-        Json::Value jsonArenaTeamTactics = sConfigMgr->GetIntDefault("bottactics", 1);
-        uint32 tactics = sConfigMgr->GetIntDefault("bottactics", 1);
-        if (tactics < 3)
-            BotUtility::BotArenaTeamTactics = tactics;
-
-        Json::Value dkquest = sConfigMgr->GetIntDefault("dkquest", 0);
-        BotUtility::DisableDKQuest = (sConfigMgr->GetIntDefault("dkquest", 0) != 0) ? true : false;
-
-    }
 
     ///- Initialize game time and timers
     TC_LOG_INFO("server.loading", "Initialize game time and timers");
@@ -2529,15 +2417,9 @@ void World::SetInitialWorldSettings()
     m_timers[WUPDATE_AUTOBROADCAST].SetInterval(getIntConfig(CONFIG_AUTOBROADCAST_INTERVAL));
     m_timers[WUPDATE_DELETECHARS].SetInterval(DAY*IN_MILLISECONDS); // check for chars to delete every day
 
-    // for AhBot
-    m_timers[WUPDATE_AHBOT].SetInterval(getIntConfig(CONFIG_AHBOT_UPDATE_INTERVAL) * IN_MILLISECONDS); // every 20 sec
-
     m_timers[WUPDATE_PINGDB].SetInterval(getIntConfig(CONFIG_DB_PING_INTERVAL)*MINUTE*IN_MILLISECONDS);    // Mysql ping time in minutes
 
     m_timers[WUPDATE_GUILDSAVE].SetInterval(getIntConfig(CONFIG_GUILD_SAVE_INTERVAL) * MINUTE * IN_MILLISECONDS);
-
-    m_timers[WUPDATE_PLAYERBOT_MGR].SetInterval(IN_MILLISECONDS * 2);
-    m_timers[WUPDATE_FIELDBOT_MGR].SetInterval(IN_MILLISECONDS * 5);
 
     m_timers[WUPDATE_BLACKMARKET].SetInterval(10 * IN_MILLISECONDS);
 
@@ -2571,9 +2453,6 @@ void World::SetInitialWorldSettings()
 
     // Delete all characters which have been deleted X days before
     Player::DeleteOldCharacters();
-
-    TC_LOG_INFO("server.loading", "Initialize AuctionHouseBot...");
-    sAuctionBot->Initialize();
 
     // Delete all custom channels which haven't been used for PreserveCustomChannelDuration days.
     Channel::CleanOldChannelsInDB();
@@ -2627,6 +2506,11 @@ void World::SetInitialWorldSettings()
     TC_LOG_INFO("server.loading", "Calculate guild limitation(s) reset time...");
     InitGuildResetTime();
 
+#ifdef ELUNA
+    if (GetEluna())
+        GetEluna()->OnConfigLoad(false); // Must be done after Eluna is initialized and scripts have run.
+#endif
+
     TC_LOG_INFO("server.loading", "Calculate next currency reset time...");
     InitCurrencyResetTime();
 
@@ -2669,9 +2553,6 @@ void World::SetInitialWorldSettings()
     }
 
     uint32 startupDuration = GetMSTimeDiffToNow(startupBegin);
-
-    sPlayerBotMgr->UpAllPlayerBotSession();
-    sPlayerBotMgr->SupplementOneRandomPlayerBotPerAccount();
 
     TC_LOG_INFO("server.worldserver", "World initialized in %u minutes %u seconds", (startupDuration / 60000), ((startupDuration % 60000) / 1000));
 
@@ -2828,13 +2709,6 @@ void World::Update(uint32 diff)
             ++blackmarket_timer;
     }
 
-    /// <li> Handle AHBot operations
-    if (m_timers[WUPDATE_AHBOT].Passed())
-    {
-        sAuctionBot->Update();
-        m_timers[WUPDATE_AHBOT].Reset();
-    }
-
     /// <li> Handle file changes
     if (m_timers[WUPDATE_CHECK_FILECHANGES].Passed())
     {
@@ -2968,16 +2842,6 @@ void World::Update(uint32 diff)
         sGuildMgr->SaveGuilds();
     }
 
-    if (m_timers[WUPDATE_PLAYERBOT_MGR].Passed())
-    {
-        sPlayerBotMgr->Update();
-        m_timers[WUPDATE_PLAYERBOT_MGR].Reset();
-    }
-    if (m_timers[WUPDATE_FIELDBOT_MGR].Passed())
-    {
-        //sFieldBotMgr->Update();
-        m_timers[WUPDATE_FIELDBOT_MGR].Reset();
-    }
     sFPMgr->Update();
 
     // update the instance reset times
@@ -2988,12 +2852,6 @@ void World::Update(uint32 diff)
 
     // And last, but not least handle the issued cli commands
     ProcessCliCommands();
-
-    if (ToolSocket::g_Tool)
-    {
-        //        TC_LOG_ERROR("server.loading", "Gtools2\n");
-        ToolSocket::g_Tool->ProcessToolCmd();
-    }
 
     sScriptMgr->OnWorldUpdate(diff);
 

@@ -60,6 +60,9 @@
 #include "Player.h"
 #include "ReputationMgr.h"
 #include "ScriptMgr.h"
+#ifdef ELUNA
+#include "LuaEngine.h"
+#endif
 #include "SharedDefines.h"
 #include "SkillExtraItems.h"
 #include "SocialMgr.h"
@@ -615,6 +618,18 @@ void Spell::EffectDummy(SpellEffIndex effIndex)
         sScriptMgr->OnDummyEffect(m_caster, m_spellInfo->Id, effIndex, unitTarget->ToCreature());
     else if (itemTarget)
         sScriptMgr->OnDummyEffect(m_caster, m_spellInfo->Id, effIndex, itemTarget);
+
+#ifdef ELUNA
+    if (Eluna* e = m_caster->GetEluna())
+    {
+        if (gameObjTarget)
+            e->OnDummyEffect(m_caster, m_spellInfo->Id, effIndex, gameObjTarget);
+        else if (unitTarget && unitTarget->GetTypeId() == TYPEID_UNIT)
+            e->OnDummyEffect(m_caster, m_spellInfo->Id, effIndex, unitTarget->ToCreature());
+        else if (itemTarget)
+            e->OnDummyEffect(m_caster, m_spellInfo->Id, effIndex, itemTarget);
+    }
+#endif
 }
 
 void Spell::EffectTriggerSpell(SpellEffIndex effIndex)
@@ -997,17 +1012,11 @@ void Spell::EffectTeleportUnits(SpellEffIndex /*effIndex*/)
 
     if (Player* player = unitTarget->ToPlayer())
     {
-        if (unitTarget->IsPlayerBot())
-        {
-        }
-        else
-        {
-            // Custom loading screen
-            if (uint32 customLoadingScreenId = effectInfo->MiscValue)
-                player->SendDirectMessage(WorldPackets::Spells::CustomLoadScreen(m_spellInfo->Id, customLoadingScreenId).Write());
+        // Custom loading screen
+        if (uint32 customLoadingScreenId = effectInfo->MiscValue)
+            player->SendDirectMessage(WorldPackets::Spells::CustomLoadScreen(m_spellInfo->Id, customLoadingScreenId).Write());
 
-            player->TeleportTo(mapid, x, y, z, orientation, unitTarget == m_caster ? TELE_TO_SPELL | TELE_TO_NOT_LEAVE_COMBAT : 0);
-        }
+        player->TeleportTo(mapid, x, y, z, orientation, unitTarget == m_caster ? TELE_TO_SPELL | TELE_TO_NOT_LEAVE_COMBAT : 0);
     }
     else if (mapid == unitTarget->GetMapId())
         unitTarget->NearTeleportTo(x, y, z, orientation, unitTarget == m_caster);
@@ -1712,6 +1721,16 @@ void Spell::SendLoot(ObjectGuid guid, LootType loottype)
 
         if (sScriptMgr->OnGossipHello(player, gameObjTarget))
             return;
+
+#ifdef ELUNA
+        if (Eluna* e = player->GetEluna())
+        {
+            if (e->OnGossipHello(player, gameObjTarget))
+                return;
+            if (e->OnGameObjectUse(player, gameObjTarget))
+                return;
+        }
+#endif
 
         if (gameObjTarget->AI()->GossipHello(player, true))
             return;
@@ -4335,18 +4354,6 @@ void Spell::EffectLeap(SpellEffIndex /*effIndex*/)
 
     if (!m_targets.HasDst())
         return;
-
-    if (Player* playerCaster = m_caster->ToPlayer())
-    {
-        if (playerCaster->IsPlayerBot())
-        {
-            if (playerCaster->getClass() == Classes::CLASS_MAGE ||
-                playerCaster->getClass() == Classes::CLASS_ROGUE ||
-                playerCaster->getClass() == Classes::CLASS_WARLOCK ||
-                playerCaster->getClass() == Classes::CLASS_WARRIOR)
-                return;
-        }
-    }
 
     Position pos = destTarget->GetPosition();
     pos = unitTarget->GetFirstCollisionPosition(unitTarget->GetDistance(pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ()), 0.0f);

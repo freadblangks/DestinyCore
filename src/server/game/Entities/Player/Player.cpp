@@ -93,6 +93,7 @@
 #include "OutdoorPvPMgr.h"
 #include "Pet.h"
 #include "PetPackets.h"
+#include "Conversation.h"
 #include "PhasingHandler.h"
 #include "QueryHolder.h"
 #include "QuestDef.h"
@@ -126,12 +127,12 @@
 #include "WorldPacket.h"
 #include "WorldQuestMgr.h"
 #include "WorldSession.h"
+#ifdef ELUNA
+#include "LuaEngine.h"
+#endif
 #include "WorldStatePackets.h"
 #include <G3D/g3dmath.h>
 #include "ChallengeModeMgr.h"
-#include "BotMovementAI.h"
-#include "PlayerBotSession.h"
-#include "BotAITool.h"
 
 #define ZONE_UPDATE_INTERVAL (1*IN_MILLISECONDS)
 #define SHOP_UPDATE_INTERVAL (30*IN_MILLISECONDS)
@@ -147,9 +148,6 @@ uint64 const MAX_MONEY_AMOUNT = 99999999999ULL;
 Player::Player(WorldSession* session) : Unit(true), m_sceneMgr(this), m_archaeologyPlayerMgr(this)
 {
     _lastSummonedBattlePet = 0;
-
-    FakerMoveTimer = 0;
-    m_bot = false;
 
     for (size_t i = 0; i < MAX_PETBATTLE_SLOTS; ++i)
         _battlePetCombatTeam[i] = std::shared_ptr<BattlePet>();
@@ -385,9 +383,6 @@ Player::Player(WorldSession* session) : Unit(true), m_sceneMgr(this), m_archaeol
     m_reputationMgr = new ReputationMgr(this);
     m_questObjectiveCriteriaMgr = std::make_unique<QuestObjectiveCriteriaMgr>(this);
 
-    m_PlayerBotSetting = new PlayerBotSetting(this);
-    m_EquipCombatPower = 0;
-
     for (uint8 i = 0; i < MAX_CUF_PROFILES; ++i)
         _CUFProfiles[i] = nullptr;
 
@@ -434,8 +429,6 @@ Player::~Player()
     delete m_reputationMgr;
     delete _cinematicMgr;
 
-    delete m_PlayerBotSetting;
-
     for (uint8 i = 0; i < VOID_STORAGE_MAX_SLOT; ++i)
         delete _voidStorageItems[i];
 
@@ -446,129 +439,6 @@ Player::~Player()
     _oldPetBattleSpellToMerge.clear();
 
     sWorld->DecreasePlayerCount();
-}
-
-uint32 Player::FindTalentType()
-{
-    return m_PlayerBotSetting->UpdateTalentType();
-}
-
-bool Player::AIEquipItem(uint32 entry)
-{
-    Item* pItem = BotUtility::FindItemFromAllBag(this, entry);
-    if (!pItem)
-        return false;
-    return m_PlayerBotSetting->EquipItem(pItem);
-}
-
-bool Player::CheckNeedTenacityFlush()
-{
-    if (m_PlayerBotSetting)
-        return m_PlayerBotSetting->CheckNeedTenacityFlush();
-    return false;
-}
-
-bool Player::ResetPlayerToLevel(uint32 level, uint32 talent, bool needTenacity)
-{
-    return m_PlayerBotSetting->ResetPlayerToLevel(level, talent, needTenacity);
-}
-
-bool Player::IsSettingFinish()
-{
-    return m_PlayerBotSetting->IsFinish();
-}
-
-void Player::SupplementAmmo()
-{
-    m_PlayerBotSetting->SupplementAmmo();
-}
-
-void Player::OnLevelupToBotAI()
-{
-    if (UnitAI* pUnitAI = GetAI())
-    {
-        BotGroupAI* pAI = dynamic_cast<BotGroupAI*>(pUnitAI);
-        if (pAI)
-        {
-            uint32 type = ReupdateTalents();
-            m_PlayerBotSetting->LearnSpells();
-            pAI->OnLevelUp(type);
-        }
-    }
-}
-
-uint32 Player::ReupdateTalents()
-{
-    if (IsPlayerBot())
-    {
-        if (CalculateTalentsTiers() <= 0)
-        {
-            uint32 type = m_PlayerBotSetting->GetTalentType();
-            return (type > 2) ? 0 : type;
-        }
-        m_PlayerBotSetting->LearnTalents();
-    }
-    uint32 type = m_PlayerBotSetting->GetTalentType();
-    SaveToDB();
-    return (type > 2) ? 0 : type;
-}
-
-uint32 Player::SwitchTalent(uint32 talent)
-{
-    return m_PlayerBotSetting->SwitchPlayerTalent(talent);
-}
-
-bool Player::IsTankPlayer()
-{
-    if (!m_PlayerBotSetting)
-        return false;
-    if (getLevel() < 10)
-        return false;
-    Classes cls = Classes(getClass());
-    if (cls != CLASS_DRUID && cls != CLASS_PALADIN && cls != CLASS_WARRIOR)
-        return false;
-    uint32 type = m_PlayerBotSetting->UpdateTalentType();
-    if (cls == CLASS_DRUID && type == 1)
-        return true;
-    if (cls == CLASS_PALADIN && type == 1)
-        return true;
-    if (cls == CLASS_WARRIOR && type == 2)
-        return true;
-    return false;
-}
-
-void Player::FlushEquipCombatPower(uint8 eSlot, bool apply, const ItemTemplate* pEquipTemplate)
-{
-    int32 equipCPLevel = 0;
-    for (uint8 slot = EquipmentSlots::EQUIPMENT_SLOT_HEAD; slot < EquipmentSlots::EQUIPMENT_SLOT_END; slot++)
-    {
-        Item* pItem = GetItemByPos(255, slot);
-        if (!pItem)
-            continue;
-        if (slot == eSlot)
-        {
-            if (apply)
-            {
-                if (pEquipTemplate)
-                    equipCPLevel += int32(pEquipTemplate->ExtendedData->ItemLevel);
-            }
-            continue;
-        }
-        const ItemTemplate* pTemplate = pItem->GetTemplate();
-        if (!pTemplate)
-            continue;
-        equipCPLevel += int32(pTemplate->ExtendedData->ItemLevel);
-        if (equipCPLevel < 0)
-            equipCPLevel = 0;
-    }
-    if (equipCPLevel < 0)
-        equipCPLevel = 0;
-    m_EquipCombatPower = equipCPLevel;
-}
-
-bool Player::EquipIsTidiness()
-{
-    return m_PlayerBotSetting->EquipIsTidiness();
 }
 
 void Player::CleanupsBeforeDelete(bool finalCleanup)
@@ -999,6 +869,11 @@ uint32 Player::EnvironmentalDamage(EnviromentalDamage type, uint32 damage)
         }
 
         UpdateCriteria(CRITERIA_TYPE_DEATHS_FROM, 1, type);
+
+#ifdef ELUNA
+        if (Eluna* e = GetEluna())
+            e->OnPlayerKilledByEnvironment(this, type);
+#endif
     }
 
     return final_damage;
@@ -1073,8 +948,7 @@ void Player::HandleDrowning(uint32 time_diff)
                 // Calculate and deal damage
                 /// @todo Check this formula
                 uint32 damage = GetMaxHealth() / 5 + urand(0, getLevel()-1);
-                if (!IsPlayerBot())
-                    EnvironmentalDamage(DAMAGE_DROWNING, damage);
+                EnvironmentalDamage(DAMAGE_DROWNING, damage);
             }
             else if (!(m_MirrorTimerFlagsLast & UNDERWATER_INWATER))      // Update time in client if need
                 SendMirrorTimer(BREATH_TIMER, getMaxTimer(BREATH_TIMER), m_MirrorTimer[BREATH_TIMER], -1);
@@ -1274,8 +1148,6 @@ void Player::Update(uint32 p_time)
 
     UpdateAfkReport(now);
 
-    m_PlayerBotSetting->UpdateReset();
-
     if (GetCombatTimer()) // Only set when in pvp combat
         if (Aura* aura = GetAura(SPELL_PVP_RULES_ENABLED))
             if (!aura->IsPermanent())
@@ -1287,15 +1159,6 @@ void Player::Update(uint32 p_time)
     {
         if (GetTypeId() == TYPEID_UNIT)
             UpdateCharmAI();
-        //if (GetAI() == nullptr)// && IsPlayerBot())
-        //{
-        //	if (i_AI)
-        //	{
-        //		i_AI->Reset();
-        //		delete i_AI;
-        //	}
-        //	i_AI = new BotMovementAI(this);
-        //}
         NeedChangeAI = false;
         IsAIEnabled = (GetAI() != nullptr);
     }
@@ -1375,7 +1238,7 @@ void Player::Update(uint32 p_time)
                     }
                 }
                 //120 degrees of radiant range, if player is not in boundary radius
-                else if (!IsPlayerBot() && !IsWithinBoundaryRadius(victim) && !HasInArc(2 * float(M_PI) / 3, victim))
+                else if (!IsWithinBoundaryRadius(victim) && !HasInArc(2 * float(M_PI) / 3, victim))
                 {
                     setAttackTimer(BASE_ATTACK, 100);
                     if (m_swingErrorMsg != 2)               // send single time (client auto repeat)
@@ -1403,7 +1266,7 @@ void Player::Update(uint32 p_time)
             {
                 if (!IsWithinMeleeRange(victim))
                     setAttackTimer(OFF_ATTACK, 100);
-                else if (!IsPlayerBot() && !IsWithinBoundaryRadius(victim) && !HasInArc(2 * float(M_PI) / 3, victim))
+                else if (!IsWithinBoundaryRadius(victim) && !HasInArc(2 * float(M_PI) / 3, victim))
                 {
                     setAttackTimer(BASE_ATTACK, 100);
                 }
@@ -2940,16 +2803,6 @@ void Player::GiveLevel(uint8 level)
     }
 
     sScriptMgr->OnPlayerLevelChanged(this, oldLevel);
-
-    if (level > oldLevel && IsPlayerBot() && m_PlayerBotSetting)
-    {
-        PlayerBotSession* pSession = dynamic_cast<PlayerBotSession*>(GetSession());
-        if (pSession)
-        {
-            BotGlobleSchedule schedule(BotGlobleScheduleType::BGSType_DelayLevelup, GetGUID());
-            pSession->PushScheduleToQueue(schedule);
-        }
-    }
 }
 
 void Player::InitTalentForLevel()
@@ -2960,13 +2813,11 @@ void Player::InitTalentForLevel()
         ResetTalentSpecialization();
 
     uint32 talentTiers = CalculateTalentsTiers();
-	if (IsPlayerBot());
-		//SetFreeTalentPoints(0);
-	else if (!GetSession()->HasPermission(rbac::RBAC_PERM_SKIP_CHECK_MORE_TALENTS_THAN_ALLOWED))
-		for (uint32 t = talentTiers; t < MAX_TALENT_TIERS; ++t)
-			for (uint32 c = 0; c < MAX_TALENT_COLUMNS; ++c)
-				for (TalentEntry const* talent : sDB2Manager.GetTalentsByPosition(getClass(), t, c))
-					RemoveTalent(talent);
+    if (!GetSession()->HasPermission(rbac::RBAC_PERM_SKIP_CHECK_MORE_TALENTS_THAN_ALLOWED))
+        for (uint32 t = talentTiers; t < MAX_TALENT_TIERS; ++t)
+            for (uint32 c = 0; c < MAX_TALENT_COLUMNS; ++c)
+                for (TalentEntry const* talent : sDB2Manager.GetTalentsByPosition(getClass(), t, c))
+                    RemoveTalent(talent);
 
     SetUInt32Value(PLAYER_FIELD_MAX_TALENT_TIERS, talentTiers);
 
@@ -3687,6 +3538,11 @@ void Player::LearnSpell(uint32 spell_id, bool dependent, int32 fromSkill /*= 0*/
         WorldPackets::Spells::LearnedSpells packet;
         packet.SpellID.push_back(spell_id);
         GetSession()->SendPacket(packet.Write());
+
+#ifdef ELUNA
+        if (Eluna* e = GetEluna())
+            e->OnLearnSpell(this, spell_id);
+#endif
     }
 
     // learn all disabled higher ranks and required spells (recursive)
@@ -4584,8 +4440,6 @@ void Player::DeleteOldCharacters(uint32 keepDays)
          {
             Field* fields = result->Fetch();
             uint32 account = fields[1].GetUInt32();
-            if (account > 0 && sPlayerBotMgr->GetPlayerBotAccountInfo(account))
-                continue;
             Player::DeleteFromDB(ObjectGuid::Create<HighGuid::Player>(fields[0].GetUInt64()), account, true, true);
          }
          while (result->NextRow());
@@ -4710,6 +4564,10 @@ void Player::ResurrectPlayer(float restore_percent, bool applySickness)
     // recast lost by death auras of any items held in the inventory
     CastAllObtainSpells();
 
+#ifdef ELUNA
+    if (Eluna* e = GetEluna())
+        e->OnResurrect(this);
+#endif
     if (!applySickness)
         return;
 
@@ -5475,13 +5333,6 @@ void Player::ApplyRatingMod(CombatRating combatRating, int32 value, bool apply)
 void Player::UpdateRating(CombatRating cr)
 {
     int32 amount = m_baseRatingValue[cr];
-    if (cr == CombatRating::CR_RESILIENCE_CRIT_TAKEN || cr == CombatRating::CR_RESILIENCE_PLAYER_DAMAGE || cr == CombatRating::CR_LIFESTEAL)
-    {
-        if (IsPlayerBot())
-        {
-            amount += int32(getLevel()) * BotUtility::BotCritTakenAddion;
-        }
-    }
     // Apply bonus from SPELL_AURA_MOD_RATING_FROM_STAT
     // stat used stored in miscValueB for this aura
     AuraEffectList const& modRatingFromStat = GetAuraEffectsByType(SPELL_AURA_MOD_RATING_FROM_STAT);
@@ -5840,6 +5691,12 @@ bool Player::UpdateSkillPro(uint16 skillId, int32 chance, uint32 step)
 
     UpdateSkillEnchantments(skillId, value, new_value);
     UpdateCriteria(CRITERIA_TYPE_REACH_SKILL_LEVEL, skillId);
+
+#ifdef ELUNA
+    if (Eluna* e = GetEluna())
+        e->OnSkillChange(this, skillId, new_value);
+#endif
+
     TC_LOG_DEBUG("entities.player.skills", "Player::UpdateSkillPro: Player '%s' (%s), SkillID: %u, Chance: %3.1f%% taken",
         GetName().c_str(), GetGUID().ToString().c_str(), skillId, chance / 10.0f);
     return true;
@@ -6513,6 +6370,10 @@ void Player::CheckAreaExploreAndOutdoor()
 
     if (!(currFields & val))
     {
+#ifdef ELUNA
+        if (Eluna* e = GetEluna())
+            e->OnDiscoverArea(this, GetAreaId());
+#endif
         SetUInt32Value(PLAYER_EXPLORED_ZONES_1 + offset, (uint32)(currFields | val));
 
         UpdateCriteria(CRITERIA_TYPE_EXPLORE_AREA);
@@ -7670,6 +7531,11 @@ void Player::UpdateArea(uint32 newAreaId)
     {
         sScriptMgr->OnPlayerUpdateArea(this, m_area, oldArea);
 
+#ifdef ELUNA
+        if (Eluna* e = GetEluna())
+            e->OnUpdateArea(this, oldArea ? oldArea->GetId() : 0, m_area ? m_area->GetId() : 0);
+#endif
+
         if (ZoneScript* zoneScript = GetZoneScript())
             zoneScript->OnPlayerAreaUpdate(this, m_area, oldArea);
 
@@ -8288,8 +8154,6 @@ void Player::_ApplyItemBonuses(Item* item, uint8 slot, bool apply)
 
     if (CanUseAttackType(attType))
         _ApplyWeaponDamage(slot, item, apply);
-
-    FlushEquipCombatPower(slot, apply, proto);
 }
 
 void Player::_ApplyWeaponDamage(uint8 slot, Item* item, bool apply)
@@ -11725,11 +11589,8 @@ InventoryResult Player::CanStoreItems(Item** items, int count, uint32* offending
             return EQUIP_ERR_LOOT_GONE;
 
         // item it 'bind'
-        if (!otherPlayer || (!otherPlayer->IsPlayerBot() && !IsPlayerBot()))
-        {
-            if (item->IsBindedNotWith(this))
-                return EQUIP_ERR_ONLY_ONE_QUIVER;
-        }
+        if (item->IsBindedNotWith(this))
+            return EQUIP_ERR_ONLY_ONE_QUIVER;
 
         ItemTemplate const* pBagProto;
 
@@ -12437,6 +12298,15 @@ InventoryResult Player::CanUseItem(ItemTemplate const* proto) const
     if (ArtifactEntry const* artifact = sArtifactStore.LookupEntry(proto->GetArtifactID()))
         if (artifact->ChrSpecializationID != GetUInt32Value(PLAYER_FIELD_CURRENT_SPEC_ID))
             return EQUIP_ERR_CANT_USE_ITEM;
+
+#ifdef ELUNA
+    if (Eluna* e = GetEluna())
+    {
+        InventoryResult eres = e->OnCanUseItem(this, proto->GetId());
+        if (eres != EQUIP_ERR_OK)
+            return eres;
+    }
+#endif
 
     return EQUIP_ERR_OK;
 }
@@ -15370,11 +15240,8 @@ void Player::OnGossipSelect(WorldObject* source, uint32 optionIndex, uint32 menu
             GetSession()->SendOpenTransmogrifier(guid);
             break;
         case GOSSIP_OPTION_ADVENTURE_MAP:
-        {
-            uint32 uiMapId = sObjectMgr->GetAdventureMapUIByCreature(source->GetEntry());
             GetSession()->SendPacket(WorldPackets::Garrison::ShowAdventureMap(source->GetGUID()).Write());
             break;
-        }
     }
 
     ModifyMoney(-cost);
@@ -15766,6 +15633,10 @@ void Player::AddQuestAndCheckCompletion(Quest const* quest, Object* questGiver)
     {
         case TYPEID_UNIT:
             sScriptMgr->OnQuestAccept(this, questGiver->ToCreature(), quest);
+#ifdef ELUNA
+            if (Eluna* e = GetEluna())
+                e->OnQuestAccept(this, questGiver->ToCreature(), quest);
+#endif
             questGiver->ToCreature()->AI()->sQuestAccept(this, quest);
             m_lastQuestGiverGUID = questGiver->GetGUID();
             break;
@@ -15793,6 +15664,10 @@ void Player::AddQuestAndCheckCompletion(Quest const* quest, Object* questGiver)
         }
         case TYPEID_GAMEOBJECT:
             sScriptMgr->OnQuestAccept(this, questGiver->ToGameObject(), quest);
+#ifdef ELUNA
+            if (Eluna* e = GetEluna())
+                e->OnQuestAccept(this, questGiver->ToGameObject(), quest);
+#endif
             questGiver->ToGameObject()->AI()->QuestAccept(this, quest);
             m_lastQuestGiverGUID = questGiver->GetGUID();
             break;
@@ -15893,6 +15768,36 @@ bool Player::CanRewardQuest(Quest const* quest, uint32 reward, bool msg) const
     return true;
 }
 
+void Player::ApplyQuestActions(uint32 questId, uint8 type, uint8 objectiveIndex /*= 0*/)
+{
+    std::vector<QuestAction> const* actions = sObjectMgr->GetQuestActions(questId);
+    TC_LOG_ERROR("server.loading", "[quest_action DEBUG] ApplyQuestActions quest=%u type=%u -> %s", questId, uint32(type), actions ? "actions found" : "NO actions (table not loaded?)");
+    if (!actions)
+        return;
+
+    for (QuestAction const& action : *actions)
+    {
+        if (action.Type != type)
+            continue;
+        if (type == QUEST_ACTION_ON_OBJECTIVE_COMPLETE && action.ObjectiveIndex != objectiveIndex)
+            continue;
+
+        TC_LOG_ERROR("server.loading", "[quest_action DEBUG] match quest=%u type=%u conv=%u phaseRefresh=%u", questId, uint32(type), action.ConversationId, uint32(action.UpdatePhaseShift));
+
+        if (action.UpdatePhaseShift)
+            PhasingHandler::OnConditionChange(this);
+        if (action.UpdateZoneAuras)
+            UpdateAreaDependentAuras();
+        if (action.SpellId)
+            CastSpell(this, action.SpellId, true);
+        if (action.ConversationId)
+        {
+            Conversation* conv = Conversation::CreateConversation(action.ConversationId, this, *this, { GetGUID() });
+            TC_LOG_ERROR("server.loading", "[quest_action DEBUG] CreateConversation(%u) -> %s", action.ConversationId, conv ? "OK" : "FAILED (conv not loaded or actor missing)");
+        }
+    }
+}
+
 void Player::AddQuest(Quest const* quest, Object* questGiver)
 {
     uint16 log_slot = FindQuestSlot(0);
@@ -15986,7 +15891,9 @@ void Player::AddQuest(Quest const* quest, Object* questGiver)
 
     sScriptMgr->OnQuestStatusChange(this, quest_id);
     sScriptMgr->OnQuestStatusChange(this, quest, oldStatus, questStatusData.Status);
-    sScriptMgr->OnQuestAccept(this, quest);  
+    sScriptMgr->OnQuestAccept(this, quest);
+
+    ApplyQuestActions(quest_id, QUEST_ACTION_ON_ACCEPT);
 }
 
 void Player::ForceCompleteQuest(uint32 quest_id)
@@ -16056,6 +15963,8 @@ void Player::ForceCompleteQuest(uint32 quest_id)
 
 void Player::CompleteQuest(uint32 quest_id)
 {
+    ApplyQuestActions(quest_id, QUEST_ACTION_ON_QUEST_COMPLETE);
+
     if (quest_id)
     {
         SetQuestStatus(quest_id, QUEST_STATUS_COMPLETE);
@@ -16195,6 +16104,8 @@ void Player::RewardQuestPackage(uint32 questPackageId, uint32 onlyItemId /*= 0*/
 
 void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, bool announce)
 {
+    ApplyQuestActions(quest->GetQuestId(), QUEST_ACTION_ON_QUEST_REWARD);
+
     //this THING should be here to protect code from quest, which cast on player far teleport as a reward
     //should work fine, cause far teleport will be executed in Player::Update()
     SetCanDelayTeleport(true);
@@ -16293,14 +16204,6 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
     if (getLevel() < sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
     {
         GiveXP(XP, nullptr);
-        if (!IsPlayerBot())
-        {
-            Group* pGroup = GetGroup();
-            if (pGroup && !pGroup->isBGGroup())
-            {
-                pGroup->AllGroupBotGiveXP(XP);
-            }
-        }
     }
     else
         moneyRew = int32(quest->GetRewMoneyMaxLevel() * sWorld->getRate(RATE_DROP_MONEY));
@@ -16462,6 +16365,8 @@ void Player::SetRewardedQuest(uint32 quest_id)
 
 void Player::FailQuest(uint32 questId)
 {
+    ApplyQuestActions(questId, QUEST_ACTION_ON_QUEST_FAIL);
+
     if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
     {
         // Already complete quests shouldn't turn failed.
@@ -16511,6 +16416,8 @@ void Player::FailQuest(uint32 questId)
 
 void Player::AbandonQuest(uint32 questId)
 {
+    ApplyQuestActions(questId, QUEST_ACTION_ON_QUEST_ABANDON);
+
     if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
     {
         // Destroy quest items on quest abandon.
@@ -17214,6 +17121,10 @@ QuestGiverStatus Player::GetQuestDialogStatus(Object* questgiver)
     {
     case TYPEID_GAMEOBJECT:
     {
+#ifdef ELUNA
+        if (Eluna* e = GetEluna())
+            e->GetDialogStatus(this, questgiver->ToGameObject());
+#endif
         QuestGiverStatus questStatus = QuestGiverStatus(sScriptMgr->GetDialogStatus(this, questgiver->ToGameObject()));
         if (questStatus != DIALOG_STATUS_SCRIPTED_NO_STATUS)
             return questStatus;
@@ -17223,6 +17134,10 @@ QuestGiverStatus Player::GetQuestDialogStatus(Object* questgiver)
     }
     case TYPEID_UNIT:
     {
+#ifdef ELUNA
+        if (Eluna* e = GetEluna())
+            e->GetDialogStatus(this, questgiver->ToCreature());
+#endif
         QuestGiverStatus questStatus = QuestGiverStatus(sScriptMgr->GetDialogStatus(this, questgiver->ToCreature()));
         if (questStatus != DIALOG_STATUS_SCRIPTED_NO_STATUS)
             return questStatus;
@@ -18108,6 +18023,9 @@ void Player::SetQuestObjectiveData(QuestObjective const& objective, int32 data)
 
     if (data >= objective.Amount)
         sScriptMgr->OnObjectiveValidate(this, objective.QuestID, objective.ID);
+
+    if (oldData < objective.Amount && data >= objective.Amount)
+        ApplyQuestActions(objective.QuestID, QUEST_ACTION_ON_OBJECTIVE_COMPLETE, objective.StorageIndex);
 
     if (Quest const* quest = sObjectMgr->GetQuestTemplate(objective.QuestID))
         sScriptMgr->OnQuestObjectiveChange(this, quest, objective, oldData, data);
@@ -20991,75 +20909,46 @@ void Player::SendRaidInfo()
     GetSession()->SendPacket(instanceInfo.Write());
 }
 
-bool Player::Satisfy(AccessRequirement const* ar, uint32 target_map, bool report)
+bool Player::Satisfy(uint32 target_map, Difficulty difficulty, bool report)
 {
-    if (!IsGameMaster() && ar)
+    if (IsGameMaster())
+        return true;
+
+    if (!sMapStore.LookupEntry(target_map))
+        return false;
+
+    if (DisableMgr::IsDisabledFor(DISABLE_TYPE_MAP, target_map, this))
     {
-        uint8 LevelMin = 0;
-        uint8 LevelMax = 0;
-
-        MapEntry const* mapEntry = sMapStore.LookupEntry(target_map);
-        if (!mapEntry)
-            return false;
-
-        if (!sWorld->getBoolConfig(CONFIG_INSTANCE_IGNORE_LEVEL))
-        {
-            if (ar->levelMin && getLevel() < ar->levelMin)
-                LevelMin = ar->levelMin;
-            if (ar->levelMax && getLevel() > ar->levelMax)
-                LevelMax = ar->levelMax;
-        }
-
-        uint32 missingItem = 0;
-        if (ar->item)
-        {
-            if (!HasItemCount(ar->item) &&
-                (!ar->item2 || !HasItemCount(ar->item2)))
-                missingItem = ar->item;
-        }
-        else if (ar->item2 && !HasItemCount(ar->item2))
-            missingItem = ar->item2;
-
-        if (DisableMgr::IsDisabledFor(DISABLE_TYPE_MAP, target_map, this))
-        {
+        if (report)
             GetSession()->SendNotification("%s", GetSession()->GetTrinityString(LANG_INSTANCE_CLOSED));
-            return false;
-        }
+        return false;
+    }
 
-        uint32 missingQuest = 0;
-        if (GetTeam() == ALLIANCE && ar->quest_A && !GetQuestRewardStatus(ar->quest_A))
-            missingQuest = ar->quest_A;
-        else if (GetTeam() == HORDE && ar->quest_H && !GetQuestRewardStatus(ar->quest_H))
-            missingQuest = ar->quest_H;
+    MapDifficultyEntry const* mapDiff = sDB2Manager.GetDownscaledMapDifficultyData(target_map, difficulty);
+    if (!mapDiff)
+        return true;
 
-        uint32 missingAchievement = 0;
-        Player* leader = this;
-        ObjectGuid leaderGuid = GetGroup() ? GetGroup()->GetLeaderGUID() : GetGUID();
-        if (leaderGuid != GetGUID())
-            leader = ObjectAccessor::FindPlayer(leaderGuid);
+    DB2Manager::MapDifficultyConditionList const* conditions = sDB2Manager.GetMapDifficultyConditions(mapDiff->ID);
+    if (!conditions)
+        return true;
 
-        if (ar->achievement)
-            if (!leader || !leader->HasAchieved(ar->achievement))
-                missingAchievement = ar->achievement;
-
-        Difficulty target_difficulty = GetDifficultyID(mapEntry);
-        MapDifficultyEntry const* mapDiff = sDB2Manager.GetDownscaledMapDifficultyData(target_map, target_difficulty);
-        if (LevelMin || LevelMax || missingItem || missingQuest || missingAchievement)
+    LocaleConstant locale = GetSession()->GetSessionDbcLocale();
+    for (MapDifficultyXConditionEntry const* condition : *conditions)
+    {
+        PlayerConditionEntry const* playerCondition = sPlayerConditionStore.LookupEntry(condition->PlayerConditionID);
+        if (playerCondition && !ConditionMgr::IsPlayerMeetingCondition(this, playerCondition))
         {
             if (report)
             {
-                if (missingQuest && !ar->questFailedText.empty())
-                    ChatHandler(GetSession()).PSendSysMessage("%s", ar->questFailedText.c_str());
-                else if (mapDiff->Message->Str[sWorld->GetDefaultDbcLocale()][0] != '\0') // if (missingAchievement) covered by this case
-                    SendTransferAborted(target_map, TRANSFER_ABORT_DIFFICULTY, target_difficulty);
-                else if (missingItem)
-                    GetSession()->SendNotification(GetSession()->GetTrinityString(LANG_LEVEL_MINREQUIRED_AND_ITEM), LevelMin, ASSERT_NOTNULL(sObjectMgr->GetItemTemplate(missingItem))->GetName(GetSession()->GetSessionDbcLocale()));
-                else if (LevelMin)
-                    GetSession()->SendNotification(GetSession()->GetTrinityString(LANG_LEVEL_MINREQUIRED), LevelMin);
+                if (condition->FailureDescription && condition->FailureDescription->Str[locale][0] != '\0')
+                    ChatHandler(GetSession()).PSendSysMessage("%s", condition->FailureDescription->Str[locale]);
+                else
+                    SendTransferAborted(target_map, TRANSFER_ABORT_DIFFICULTY, difficulty);
             }
             return false;
         }
     }
+
     return true;
 }
 
@@ -21675,9 +21564,6 @@ void Player::_SaveActions(CharacterDatabaseTransaction& trans)
 
 void Player::_SaveAuras(CharacterDatabaseTransaction& trans)
 {
-    if (IsPlayerBot())
-        return;
-
     CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_AURA_EFFECT);
     stmt->setUInt64(0, GetGUID().GetCounter());
     trans->Append(stmt);
@@ -24639,20 +24525,15 @@ void Player::LeaveBattleground(bool teleportToEntryPoint)
 {
     if (Battleground* bg = GetBattleground())
     {
-        //sPlayerBotMgr->AllPlayerLeaveBG(GetGUID());
-        //if (this->IsGameMaster())
-        //{
-        if (bg->isBattleground() && !IsPlayerBot() && IsGameMaster())
+        if (bg->isBattleground() && IsGameMaster())
         {
             bg->EndBattleground((GetTeamId() == TEAM_ALLIANCE) ? HORDE : ALLIANCE);
-            //bg->EndBattleground(HORDE);
         }
-        //}
 
         bg->RemovePlayerAtLeave(GetGUID(), teleportToEntryPoint, true);
 
         // call after remove to be sure that player resurrected for correct cast
-        if (bg->isBattleground() && !IsGameMaster() && sWorld->getBoolConfig(CONFIG_BATTLEGROUND_CAST_DESERTER) && !IsPlayerBot())
+        if (bg->isBattleground() && !IsGameMaster() && sWorld->getBoolConfig(CONFIG_BATTLEGROUND_CAST_DESERTER))
         {
             if (bg->GetStatus() == STATUS_IN_PROGRESS || bg->GetStatus() == STATUS_WAIT_JOIN)
             {
@@ -26854,7 +26735,7 @@ void Player::UpdateAreaDependentAuras()
         {
             // use m_zoneUpdateId for speed: UpdateArea called from UpdateZone or instead UpdateZone in both cases m_zoneUpdateId up-to-date
             SpellCastResult scr = iter->second->GetSpellInfo()->CheckLocation(GetMapId(), GetZoneId(), GetAreaId(), this);
-            if (scr != SPELL_CAST_OK && !PlayerBotSetting::IsBotFlyMountAura(iter->first))
+            if (scr != SPELL_CAST_OK)
                 RemoveOwnedAura(iter);
             else
                 ++iter;
@@ -29064,10 +28945,6 @@ void Player::SendTimeSync()
     // Schedule next sync in 10 sec
     m_timeSyncTimer = 10000;
     m_timeSyncServer = getMSTime();
-
-    // Check if it is a PlayerBot
-    if (IsPlayerBot())
-        return;
 
     if (m_timeSyncQueue.size() > 3)
         TC_LOG_ERROR("network", "Player::SendTimeSync: Did not receive CMSG_TIME_SYNC_RESP for over 30 seconds from '%s' (%s), possible cheater",

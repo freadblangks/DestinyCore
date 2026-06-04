@@ -19,6 +19,10 @@
 #include "Battleground.h"
 #include "BrawlersGuild.h"
 #include "CellImpl.h"
+#include "MovementServices.h"
+#include "PathPlanner.h"
+#include "WanderInfluenceMap.h"
+#include "WanderTickScheduler.h"
 #include "Conversation.h"
 #include "DatabaseEnv.h"
 #include "DisableMgr.h"
@@ -52,14 +56,11 @@
 #include "World.h"
 #include "WorldSession.h"
 #include "WildBattlePet.h"
-#include "PlayerBotMgr.h"
-#include "FieldBotMgr.h"
-#include "../CommandBG/CommandAB.h"
-#include "../CommandBG/CommandWS.h"
-#include "../CommandBG/CommandEY.h"
-#include "../CommandBG/CommandAV.h"
-#include "../CommandBG/CommandIC.h"
 #include "Config.h"
+#ifdef ELUNA
+#include "LuaEngine.h"
+#include "ElunaConfig.h"
+#endif
 
 u_map_magic MapMagic        = { {'M','A','P','S'} };
 u_map_magic MapVersionMagic = { {'v','1','.','9'} };
@@ -98,7 +99,15 @@ Map::~Map()
     if (m_parentMap == this)
         delete m_childTerrainMaps;
 
+    // Must tear down before MMapManager unload: worker threads still hold
+    // dtNavMesh / dtNavMeshQuery pointers from in-flight requests.
+    _movementServices.reset();
+
     MMAP::MMapFactory::createOrGetMMapManager()->unloadMapInstance(GetId(), i_InstanceId);
+#ifdef ELUNA
+    if (GetEluna())
+        sElunaMgr->Destroy(_elunaInfo);
+#endif
 }
 
 bool Map::ExistMap(uint32 mapid, int gx, int gy)
@@ -287,7 +296,10 @@ m_unloadTimer(0), m_VisibleDistance(DEFAULT_VISIBILITY_DISTANCE),
 m_VisibilityNotifyPeriod(DEFAULT_VISIBILITY_NOTIFY_PERIOD),
 m_activeNonPlayersIter(m_activeNonPlayers.end()), _transportsUpdateIter(_transports.end()),
 i_gridExpiry(expiry),
-i_scriptLock(false), _defaultLight(DB2Manager::GetDefaultMapLight(id))
+i_scriptLock(false),
+_wanderInfluence(std::make_unique<WanderInfluenceMap>()),
+_wanderScheduler(std::make_unique<WanderTickScheduler>()),
+_defaultLight(DB2Manager::GetDefaultMapLight(id))
 {
     if (_parent)
     {
@@ -301,6 +313,15 @@ i_scriptLock(false), _defaultLight(DB2Manager::GetDefaultMapLight(id))
         m_parentTerrainMap = this;
         m_childTerrainMaps = new std::vector<Map*>();
     }
+
+#ifdef ELUNA
+    if (sElunaConfig->IsElunaEnabled() && sElunaConfig->ShouldMapLoadEluna(id))
+        if (!IsParentMap() || (IsParentMap() && !Instanceable()))
+        {
+            _elunaInfo = { ElunaInfoKey::MakeKey(GetId(), GetInstanceId()) };
+            sElunaMgr->Create(this, _elunaInfo);
+        }
+#endif
 
     for (uint32 x = 0; x < MAX_NUMBER_OF_GRIDS; ++x)
     {
@@ -321,6 +342,8 @@ i_scriptLock(false), _defaultLight(DB2Manager::GetDefaultMapLight(id))
     GetGuidSequenceGenerator<HighGuid::Transport>().Set(sObjectMgr->GetGenerator<HighGuid::Transport>().GetNextAfterMaxUsed());
 
     MMAP::MMapFactory::createOrGetMMapManager()->loadMapInstance(sWorld->GetDataPath(), GetId(), i_InstanceId);
+
+    _movementServices = std::make_unique<Movement::MovementServices>(this);
 
     // Create brawler guild only for this map
     if (id == 369 || id == 1043)
@@ -775,6 +798,11 @@ void Map::VisitNearbyCellsOf(WorldObject* obj, TypeContainerVisitor<Trinity::Obj
 
 void Map::Update(const uint32 t_diff)
 {
+    // Rotate the wander scheduler slot once per Map update so SmartWander
+    // decisions are spread over WanderTickScheduler::SLOTS frames instead
+    // of all firing on the same frame after a global idle window.
+    _wanderScheduler->AdvanceFrame();
+
     _dynamicTree.update(t_diff);
     /// update worldsessions for existing players
     for (m_mapRefIter = m_mapRefManager.begin(); m_mapRefIter != m_mapRefManager.end(); ++m_mapRefIter)
@@ -808,9 +836,6 @@ void Map::Update(const uint32 t_diff)
 
         // update players at tick
         player->Update(t_diff);
-
-        if (!player->IsPlayerBot())
-            sFieldBotMgr->Update(player->GetGUID());
 
         VisitNearbyCellsOf(player, grid_object_update, world_object_update);
 
@@ -892,6 +917,9 @@ void Map::Update(const uint32 t_diff)
 
     if (!m_mapRefManager.isEmpty() || !m_activeNonPlayers.empty())
         ProcessRelocationNotifies(t_diff);
+
+    if (_movementServices)
+        _movementServices->Update(t_diff);
 
     sScriptMgr->OnMapUpdate(this, t_diff);
 }
@@ -989,6 +1017,9 @@ void Map::RemovePlayerFromMap(Player* player, bool remove)
 {
     sScriptMgr->OnPlayerLeaveMap(this, player);
 
+    if (_movementServices)
+        _movementServices->OnUnitRemoved(player);
+
     player->RemoveFromWorld();
     SendRemoveTransports(player);
 
@@ -1015,7 +1046,11 @@ void Map::RemoveFromMap(T *obj, bool remove)
     obj->ResetMap();
 
     if (Creature* creature = obj->ToCreature())
+    {
         RemoveBattlePet(creature);
+        if (_movementServices)
+            _movementServices->OnUnitRemoved(creature);
+    }
 
     if (remove)
     {
@@ -3169,6 +3204,16 @@ void Map::AddObjectToRemoveList(WorldObject* obj)
 {
     ASSERT(obj->GetMapId() == GetId() && obj->GetInstanceId() == GetInstanceId());
 
+#ifdef ELUNA
+    if (Eluna* e = GetEluna())
+    {
+        if (Creature* creature = obj->ToCreature())
+            e->OnRemove(creature);
+        else if (GameObject* gameobject = obj->ToGameObject())
+            e->OnRemove(gameobject);
+    }
+#endif
+
     obj->CleanupsBeforeDelete(false);                            // remove or simplify at least cross referenced links
 
     i_objectsToRemove.insert(obj);
@@ -3654,11 +3699,26 @@ void InstanceMap::CreateInstanceData(bool load)
     if (i_data != NULL)
         return;
 
-    InstanceTemplate const* mInstance = sObjectMgr->GetInstanceTemplate(GetId());
-    if (mInstance)
+    bool isElunaAI = false;
+
+#ifdef ELUNA
+    if (Eluna* e = GetEluna())
     {
-        i_script_id = mInstance->ScriptId;
-        i_data = sScriptMgr->CreateInstanceData(this);
+        i_data = e->GetInstanceData(this);
+        if (i_data)
+            isElunaAI = true;
+    }
+#endif
+
+    // if Eluna AI was fetched succesfully we should not call CreateInstanceData nor set the unused scriptID
+    if (!isElunaAI)
+    {
+        InstanceTemplate const* mInstance = sObjectMgr->GetInstanceTemplate(GetId());
+        if (mInstance)
+        {
+            i_script_id = mInstance->ScriptId;
+            i_data = sScriptMgr->CreateInstanceData(this);
+        }
     }
 
     if (!i_data)
@@ -3682,7 +3742,7 @@ void InstanceMap::CreateInstanceData(bool load)
             i_data->SetEntranceLocation(fields[2].GetUInt32());
             if (!data.empty())
             {
-                TC_LOG_DEBUG("maps", "Loading instance data for `%s` with id %u", sObjectMgr->GetScriptName(i_script_id).c_str(), i_InstanceId);
+                TC_LOG_DEBUG("maps", "Loading instance data for `%s` with id %u", isElunaAI ? "ElunaAI" : sObjectMgr->GetScriptName(i_script_id).c_str(), i_InstanceId);
                 i_data->Load(data.c_str());
             }
         }
@@ -3981,9 +4041,6 @@ bool InstanceMap::HasPermBoundPlayers() const
 
 uint32 InstanceMap::GetMaxPlayers() const
 {
-    if (BotGroupAI::PVE_MAX_DUNGEON)
-        return 40;
-
     MapDifficultyEntry const* mapDiff = GetMapDifficulty();
     if (mapDiff && mapDiff->MaxPlayers)
         return mapDiff->MaxPlayers;
@@ -4000,7 +4057,7 @@ uint32 InstanceMap::GetMaxResetDelay() const
 /* ******* Battleground Instance Maps ******* */
 
 BattlegroundMap::BattlegroundMap(uint32 id, time_t expiry, uint32 InstanceId, Map* _parent, Difficulty spawnMode)
-  : Map(id, expiry, InstanceId, spawnMode, _parent), m_bg(NULL), m_pAllianceCommander(NULL), m_pHordeCommander(NULL)
+  : Map(id, expiry, InstanceId, spawnMode, _parent), m_bg(NULL)
 {
     //lets initialize visibility distance for BG/Arenas
     BattlegroundMap::InitVisibilityDistance();
@@ -4051,17 +4108,6 @@ bool BattlegroundMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/)
         player->m_InstanceValid = true;
     }
     bool result = Map::AddPlayerToMap(player);
-    if (result && player->IsPlayerBot())
-    {
-        if (player->GetTeamId() == TEAM_ALLIANCE && m_pAllianceCommander)
-        {
-            m_pAllianceCommander->AddPlayerBot(player, m_bg);
-        }
-        else if (player->GetTeamId() == TEAM_HORDE && m_pHordeCommander)
-        {
-            m_pHordeCommander->AddPlayerBot(player, m_bg);
-        }
-    }
 
     return result;
 }
@@ -4069,18 +4115,6 @@ bool BattlegroundMap::AddPlayerToMap(Player* player, bool initPlayer /*= true*/)
 void BattlegroundMap::RemovePlayerFromMap(Player* player, bool remove)
 {
     TC_LOG_DEBUG("maps", "MAP: Removing player '%s' from bg '%u' of map '%s' before relocating to another map", player->GetName().c_str(), GetInstanceId(), GetMapName());
-    if (player->IsPlayerBot())
-    {
-        PlayerBotMgr::SwitchPlayerBotAI(player, PlayerBotAIType::PBAIT_FIELD, true);
-        if (player->GetTeamId() == TEAM_ALLIANCE && m_pAllianceCommander)
-        {
-            m_pAllianceCommander->RemovePlayerBot(player);
-        }
-        else if (player->GetTeamId() == TEAM_HORDE && m_pHordeCommander)
-        {
-            m_pHordeCommander->RemovePlayerBot(player);
-        }
-    }
     Map::RemovePlayerFromMap(player, remove);
 }
 
@@ -4101,97 +4135,6 @@ void BattlegroundMap::RemoveAllPlayers()
 void BattlegroundMap::Update(const uint32 diff)
 {
     Map::Update(diff);
-    if (m_pAllianceCommander)
-        m_pAllianceCommander->Update(diff);
-    if (m_pHordeCommander)
-        m_pHordeCommander->Update(diff);
-}
-
-void BattlegroundMap::InsureCommander(BattlegroundTypeId bgType)
-{
-    if (!m_pAllianceCommander)
-    {
-        switch (bgType)
-        {
-        case BATTLEGROUND_AB:
-            m_pAllianceCommander = new CommandAB(m_bg, TeamId::TEAM_ALLIANCE);
-            break;
-        case BATTLEGROUND_WS:
-            m_pAllianceCommander = new CommandWS(m_bg, TeamId::TEAM_ALLIANCE);
-            break;
-        case BATTLEGROUND_EY:
-            m_pAllianceCommander = new CommandEY(m_bg, TeamId::TEAM_ALLIANCE);
-            break;
-        case BATTLEGROUND_AV:
-            m_pAllianceCommander = new CommandAV(m_bg, TeamId::TEAM_ALLIANCE);
-            break;
-        case BATTLEGROUND_IC:
-            m_pAllianceCommander = new CommandIC(m_bg, TeamId::TEAM_ALLIANCE);
-            break;
-        }
-    }
-    if (!m_pHordeCommander)
-    {
-        switch (bgType)
-        {
-        case BATTLEGROUND_AB:
-            m_pHordeCommander = new CommandAB(m_bg, TeamId::TEAM_HORDE);
-            break;
-        case BATTLEGROUND_WS:
-            m_pHordeCommander = new CommandWS(m_bg, TeamId::TEAM_HORDE);
-            break;
-        case BATTLEGROUND_EY:
-            m_pHordeCommander = new CommandEY(m_bg, TeamId::TEAM_HORDE);
-            break;
-        case BATTLEGROUND_AV:
-            m_pHordeCommander = new CommandAV(m_bg, TeamId::TEAM_HORDE);
-            break;
-        case BATTLEGROUND_IC:
-            m_pHordeCommander = new CommandIC(m_bg, TeamId::TEAM_HORDE);
-            break;
-        }
-    }
-}
-
-void BattlegroundMap::InitCommander()
-{
-    if (m_pAllianceCommander)
-        m_pAllianceCommander->Initialize();
-    if (m_pHordeCommander)
-        m_pHordeCommander->Initialize();
-}
-
-void BattlegroundMap::ResetCommander()
-{
-    if (m_pAllianceCommander)
-        m_pAllianceCommander->UpdateBelongBattleground(m_bg);
-    if (m_pHordeCommander)
-        m_pHordeCommander->UpdateBelongBattleground(m_bg);
-}
-
-void BattlegroundMap::ReadyCommander()
-{
-    if (m_pAllianceCommander)
-        m_pAllianceCommander->ReadyGame();
-    if (m_pHordeCommander)
-        m_pHordeCommander->ReadyGame();
-}
-
-void BattlegroundMap::StartCommander()
-{
-    if (m_pAllianceCommander)
-        m_pAllianceCommander->StartGame();
-    if (m_pHordeCommander)
-        m_pHordeCommander->StartGame();
-}
-
-CommandBG* BattlegroundMap::GetCommander(TeamId team)
-{
-    if (team == TEAM_ALLIANCE)
-        return m_pAllianceCommander;
-    else if (team == TEAM_HORDE)
-        return m_pHordeCommander;
-    return NULL;
 }
 
 GameObject* Map::SummonGameObject(uint32 entry, Position const& pos, QuaternionData const& rot, uint32 respawnTime)

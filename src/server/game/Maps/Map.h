@@ -35,11 +35,18 @@
 #include <mutex>
 #include <set>
 #include <unordered_set>
+#ifdef ELUNA
+#include "LuaValue.h"
+#include "ElunaMgr.h"
+#endif
 
 class Battleground;
 class BattlegroundMap;
 class BrawlersGuild;
 class CreatureGroup;
+#ifdef ELUNA
+class Eluna;
+#endif
 class GameObjectModel;
 class Group;
 class InstanceMap;
@@ -67,11 +74,11 @@ class Transport;
 struct WildBattlePetPool;
 enum Difficulty : uint8;
 enum WeatherState : uint32;
-class CommandBG;
 
 namespace Trinity { struct ObjectUpdater; }
 namespace G3D { class Plane; }
 namespace VMAP { enum class ModelIgnoreFlags : uint32; }
+namespace Movement { class MovementServices; }
 
 struct ScriptAction
 {
@@ -459,6 +466,10 @@ class TC_GAME_API Map : public GridRefManager<NGridType>
         template<class T> void SwitchGridContainers(T* obj, bool on);
         CreatureGroupHolderType CreatureGroupHolder;
 
+        class WanderInfluenceMap& GetWanderInfluence() { return *_wanderInfluence; }
+        class WanderTickScheduler& GetWanderScheduler() { return *_wanderScheduler; }
+        Movement::MovementServices* GetMovementServices() const { return _movementServices.get(); }
+
         void UpdateIteratorBack(Player* player);
 
         TempSummon* SummonCreature(uint32 entry, Position const& pos, SummonPropertiesEntry const* properties = NULL, uint32 duration = 0, Unit* summoner = NULL, uint32 spellId = 0, uint32 vehId = 0, bool visibleBySummonerOnly = false, Spell const* summonSpell = nullptr);
@@ -592,13 +603,6 @@ class TC_GAME_API Map : public GridRefManager<NGridType>
             _updateObjects.erase(obj);
         }
 
-        virtual void InsureCommander(BattlegroundTypeId bgType) {}
-        virtual void InitCommander() {}
-        virtual void ResetCommander() {}
-        virtual void ReadyCommander() {}
-        virtual void StartCommander() {}
-        virtual CommandBG* GetCommander(TeamId team) { return NULL; }
-
         void AddBattlePet(Creature* creature);
         void RemoveBattlePet(Creature* creature);
         WildBattlePetPool* GetWildBattlePetPool(Creature* creature);
@@ -606,6 +610,12 @@ class TC_GAME_API Map : public GridRefManager<NGridType>
         void DepopulateBattlePet();
 
         time_t m_respawnChallenge = 0;
+
+        bool IsParentMap() const { return m_parentMap == this; }
+#ifdef ELUNA
+        Eluna* GetEluna() const { return sElunaMgr->Get(_elunaInfo); }
+        LuaVal lua_data = LuaVal({});
+#endif
 
     private:
         void LoadMapAndVMap(int gx, int gy);
@@ -718,6 +728,10 @@ class TC_GAME_API Map : public GridRefManager<NGridType>
         Map* m_parentTerrainMap;                                    // points to m_parentMap of MapEntry::ParentMapID
         std::vector<Map*>* m_childTerrainMaps;                      // contains m_parentMap of maps that have MapEntry::ParentMapID == GetId()
 
+#ifdef ELUNA
+        ElunaInfo _elunaInfo;
+#endif
+
         NGridType* i_grids[MAX_NUMBER_OF_GRIDS][MAX_NUMBER_OF_GRIDS];
         GridMap* GridMaps[MAX_NUMBER_OF_GRIDS][MAX_NUMBER_OF_GRIDS];
         uint16 GridMapReference[MAX_NUMBER_OF_GRIDS][MAX_NUMBER_OF_GRIDS];
@@ -731,6 +745,10 @@ class TC_GAME_API Map : public GridRefManager<NGridType>
         std::set<WorldObject*> i_objectsToRemove;
         std::map<WorldObject*, bool> i_objectsToSwitch;
         std::set<WorldObject*> i_worldObjects;
+
+        std::unique_ptr<WanderInfluenceMap> _wanderInfluence;
+        std::unique_ptr<WanderTickScheduler> _wanderScheduler;
+        std::unique_ptr<Movement::MovementServices> _movementServices;
 
         typedef std::multimap<time_t, ScriptAction> ScriptScheduleMap;
         ScriptScheduleMap m_scriptSchedule;
@@ -857,16 +875,8 @@ class TC_GAME_API BattlegroundMap : public Map
         Battleground* GetBG() { return m_bg; }
         void SetBG(Battleground* bg) { m_bg = bg; }
 
-        void InsureCommander(BattlegroundTypeId bgType) override;
-        void InitCommander() override;
-        void ResetCommander() override;
-        void ReadyCommander() override;
-        void StartCommander() override;
-        CommandBG* GetCommander(TeamId team) override;
     private:
         Battleground* m_bg;
-        CommandBG* m_pAllianceCommander;
-        CommandBG* m_pHordeCommander;
 };
 
 template<class T, class CONTAINER>

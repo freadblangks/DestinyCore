@@ -39,7 +39,6 @@
 class Item;
 class Unit;
 class Vehicle;
-struct AccessRequirement;
 struct AreaTriggerData;
 struct DeclinedName;
 struct DungeonEncounterEntry;
@@ -447,18 +446,6 @@ struct AreaTriggerTeleportStruct
     float  target_Y;
     float  target_Z;
     float  target_Orientation;
-};
-
-struct AccessRequirement
-{
-    uint8  levelMin;
-    uint8  levelMax;
-    uint32 item;
-    uint32 item2;
-    uint32 quest_A;
-    uint32 quest_H;
-    uint32 achievement;
-    std::string questFailedText;
 };
 
 typedef std::set<ObjectGuid::LowType> CellGuidSet;
@@ -962,7 +949,6 @@ class TC_GAME_API ObjectMgr
 
         typedef std::unordered_map<uint32, uint32> AreaTriggerScriptContainer;
 
-        typedef std::unordered_map<uint64, AccessRequirement*> AccessRequirementContainer;
 
         typedef std::unordered_map<uint32, RepRewardRate > RepRewardRateContainer;
         typedef std::unordered_map<uint32, ReputationOnKillEntry> RepOnKillContainer;
@@ -1073,6 +1059,12 @@ class TC_GAME_API ObjectMgr
             return itr != _questObjectives.end() ? itr->second : nullptr;
         }
 
+        std::vector<QuestAction> const* GetQuestActions(uint32 questId) const
+        {
+            auto itr = _questActions.find(questId);
+            return itr != _questActions.end() ? &itr->second : nullptr;
+        }
+
         std::unordered_set<uint32> const* GetQuestsForAreaTrigger(uint32 Trigger_ID) const
         {
             auto itr = _questAreaTriggerStore.find(Trigger_ID);
@@ -1103,7 +1095,6 @@ class TC_GAME_API ObjectMgr
         GraveYardData const* FindGraveYardData(uint32 id, uint32 zone) const;
 
         AreaTriggerTeleportStruct const* GetAreaTrigger(int64 trigger) const;
-        AccessRequirement const* GetAccessRequirement(uint32 mapid, Difficulty difficulty) const;
         AreaTriggerTeleportStruct const* GetGoBackTrigger(uint32 Map) const;
         AreaTriggerTeleportStruct const* GetMapEntranceTrigger(uint32 Map) const;
 
@@ -1159,6 +1150,7 @@ class TC_GAME_API ObjectMgr
         DungeonEncounterList const* GetDungeonEncounterList(uint32 mapId, Difficulty difficulty) const;
 
         void LoadQuests();
+        void LoadQuestActions();
         void LoadQuestStartersAndEnders();
         void LoadGameobjectQuestStarters();
         void LoadGameobjectQuestEnders();
@@ -1270,7 +1262,6 @@ class TC_GAME_API ObjectMgr
         void LoadNPCText();
 
         void LoadAreaTriggerTeleports();
-        void LoadAccessRequirements();
         void LoadQuestAreaTriggers();
         void LoadQuestGreetings();
         void LoadAreaTriggerScripts();
@@ -1319,7 +1310,6 @@ class TC_GAME_API ObjectMgr
 
         void LoadSceneTemplates();
 
-        void LoadAdventureMapUI();
 
         void LoadPlayerChoices();
         void LoadPlayerChoicesLocale();
@@ -1560,7 +1550,6 @@ class TC_GAME_API ObjectMgr
         Trainer::Trainer const* GetTrainer(uint32 trainerId) const;
         uint32 GetCreatureDefaultTrainer(uint32 creatureId) const;
 
-        uint32 GetAdventureMapUIByCreature(uint32 creatureId) const;
 
         VendorItemData const* GetNpcVendorItemList(uint32 entry) const
         {
@@ -1699,6 +1688,7 @@ class TC_GAME_API ObjectMgr
 
         QuestMap _questTemplates;
         QuestObjectivesByIdContainer _questObjectives;
+        std::unordered_map<uint32, std::vector<QuestAction>> _questActions;
 
         typedef std::unordered_map<uint32, NpcText> NpcTextContainer;
         typedef std::unordered_map<uint32, std::unordered_set<uint32>> QuestAreaTriggerContainer;
@@ -1713,7 +1703,6 @@ class TC_GAME_API ObjectMgr
         QuestGreetingLocaleContainer _questGreetingLocaleStore;
         AreaTriggerTeleportContainer _areaTriggerTeleportStore;
         AreaTriggerScriptContainer _areaTriggerScriptStore;
-        AccessRequirementContainer _accessRequirementStore;
         DungeonEncounterContainer _dungeonEncounterStore;
         DungeonCreditEncounterMap _DungeonCreditEncounters;
 
@@ -1837,7 +1826,6 @@ class TC_GAME_API ObjectMgr
         CacheTrainerSpellContainer _cacheTrainerSpellStore;
         std::unordered_map<uint32, Trainer::Trainer> _trainers;
         std::unordered_map<uint32, uint32> _creatureDefaultTrainers;
-        std::unordered_map<uint32, uint32> _adventureMapUIByCreature;
 
         std::set<uint32> _difficultyEntries[MAX_CREATURE_DIFFICULTIES]; // already loaded difficulty 1 value in creatures, used in CheckCreatureTemplate
         std::set<uint32> _hasDifficultyEntries[MAX_CREATURE_DIFFICULTIES]; // already loaded creatures with difficulty 1 values, used in CheckCreatureTemplate

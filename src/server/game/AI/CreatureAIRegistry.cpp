@@ -21,10 +21,9 @@
 #include "GuardAI.h"
 #include "PetAI.h"
 #include "TotemAI.h"
-#include "RandomMovementGenerator.h"
 #include "MovementGeneratorImpl.h"
 #include "CreatureAIRegistry.h"
-#include "WaypointMovementGenerator.h"
+#include "WaypointGenerator.h"
 #include "CreatureAIFactory.h"
 #include "SmartAI.h"
 
@@ -51,7 +50,6 @@ namespace AIRegistry
         (new GameObjectAIFactory<GameObjectAI>("GameObjectAI"))->RegisterSelf();
         (new GameObjectAIFactory<SmartGameObjectAI>("SmartGameObjectAI"))->RegisterSelf();
 
-        (new MovementGeneratorFactory<RandomMovementGenerator<Creature> >(RANDOM_MOTION_TYPE))->RegisterSelf();
-        (new MovementGeneratorFactory<WaypointMovementGenerator<Creature> >(WAYPOINT_MOTION_TYPE))->RegisterSelf();
+        (new MovementGeneratorFactory<WaypointGenerator>(WAYPOINT_MOTION_TYPE))->RegisterSelf();
     }
 }

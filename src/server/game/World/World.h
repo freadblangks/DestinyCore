@@ -36,7 +36,13 @@
 #include <memory>
 #include <unordered_map>
 #include <vector>
+#ifdef ELUNA
+#include "ElunaMgr.h"
+#endif
 
+#ifdef ELUNA
+class Eluna;
+#endif
 class Player;
 class WorldPacket;
 class WorldSession;
@@ -93,8 +99,6 @@ enum WorldTimers
     WUPDATE_BLACKMARKET,
     WUPDATE_CHECK_FILECHANGES,
     WUPDATE_WORLD_QUEST,
-    WUPDATE_PLAYERBOT_MGR,
-    WUPDATE_FIELDBOT_MGR,
     WUPDATE_COUNT
 };
 
@@ -399,7 +403,6 @@ enum WorldIntConfigs
     CONFIG_BG_REWARD_WINNER_CONQUEST_LAST,
     CONFIG_CREATURE_PICKPOCKET_REFILL,
     CONFIG_CREATURE_STOP_FOR_PLAYER,
-    CONFIG_AHBOT_UPDATE_INTERVAL,
     CONFIG_FEATURE_SYSTEM_CHARACTER_UNDELETE_COOLDOWN,
     CONFIG_CHARTER_COST_GUILD,
     CONFIG_CHARTER_COST_ARENA_2v2,
@@ -839,6 +842,10 @@ class TC_GAME_API World
         std::string GetCheckOpcode() { return m_CheckAuthorization; }
         void CheckAuthorization();
 
+#ifdef ELUNA
+        Eluna* GetEluna() const { return sElunaMgr->Get(_elunaInfo); }
+#endif
+
     protected:
         void _UpdateGameTime();
         // callback for UpdateRealmCharacters
@@ -956,6 +963,9 @@ class TC_GAME_API World
 
         std::string m_MachineSoleCode;
         std::string m_CheckAuthorization;
+#ifdef ELUNA
+        ElunaInfo _elunaInfo;
+#endif
 };
 
 TC_GAME_API extern Realm realm;

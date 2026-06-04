@@ -46,12 +46,13 @@
 #include "RBAC.h"
 #include "Realm.h"
 #include "ScriptMgr.h"
+#ifdef ELUNA
+#include "LuaEngine.h"
+#endif
 #include "SocialMgr.h"
 #include "WardenWin.h"
 #include "World.h"
 #include "WorldSocket.h"
-#include "PlayerBotMgr.h"
-#include "FieldBotMgr.h"
 #include "OnlineMgr.h"
 
 namespace {
@@ -212,9 +213,6 @@ std::string WorldSession::GetPlayerInfo() const
 /// Send a packet to the client
 void WorldSession::SendPacket(WorldPacket const* packet, bool forced /*= false*/)
 {
-    if (IsBotSession())
-        return;
-
     if (packet->GetOpcode() == NULL_OPCODE)
     {
         TC_LOG_ERROR("network.opcode", "Prevented sending of NULL_OPCODE to %s", GetPlayerInfo().c_str());
@@ -300,6 +298,17 @@ void WorldSession::SendPacket(WorldPacket const* packet, bool forced /*= false*/
 
     sScriptMgr->OnPacketSend(this, *packet);
 
+#ifdef ELUNA
+    if (Player* plr = GetPlayer())
+    {
+        if (Eluna* e = plr->GetEluna())
+        {
+            if (!e->OnPacketSend(this, *packet))
+                return;
+        }
+    }
+#endif
+
     TC_LOG_TRACE("network.opcode", "S->C: %s %s", GetPlayerInfo().c_str(), GetOpcodeNameForLogging(static_cast<OpcodeServer>(packet->GetOpcode())).c_str());
     m_Socket[conIdx]->SendPacket(*packet);
 }
@@ -336,7 +345,7 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
 
     ///- Before we process anything:
     /// If necessary, kick the player from the character select screen
-    if (!IsBotSession() && IsConnectionIdle())
+    if (IsConnectionIdle())
         m_Socket[CONNECTION_TYPE_REALM]->CloseSocket();
 
     ///- Retrieve packets from the receive queue and call the appropriate handlers
@@ -372,6 +381,11 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
                     else if (_player->IsInWorld() && AntiDOS.EvaluateOpcode(*packet, currentTime))
                     {
                         sScriptMgr->OnPacketReceive(this, *packet);
+#ifdef ELUNA
+                        if (Eluna* e = sWorld->GetEluna())
+                            if (!e->OnPacketReceive(this, *packet))
+                                break;
+#endif
                         opHandle->Call(this, *packet);
                     }
                     // lag can cause STATUS_LOGGEDIN opcodes to arrive after the player started a transfer
@@ -384,6 +398,11 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
                     {
                         // not expected _player or must checked in packet hanlder
                         sScriptMgr->OnPacketReceive(this, *packet);
+#ifdef ELUNA
+                        if (Eluna* e = sWorld->GetEluna())
+                            if (!e->OnPacketReceive(this, *packet))
+                                break;
+#endif
                         opHandle->Call(this, *packet);
                     }
                     break;
@@ -395,6 +414,11 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
                     else if (AntiDOS.EvaluateOpcode(*packet, currentTime))
                     {
                         sScriptMgr->OnPacketReceive(this, *packet);
+#ifdef ELUNA
+                        if (Eluna* e = sWorld->GetEluna())
+                            if (!e->OnPacketReceive(this, *packet))
+                                break;
+#endif
                         opHandle->Call(this, *packet);
                     }
                     break;
@@ -414,6 +438,11 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
                     if (AntiDOS.EvaluateOpcode(*packet, currentTime))
                     {
                         sScriptMgr->OnPacketReceive(this, *packet);
+#ifdef ELUNA
+                        if (Eluna* e = sWorld->GetEluna())
+                            if (!e->OnPacketReceive(this, *packet))
+                                break;
+#endif
                         opHandle->Call(this, *packet);
                     }
                     break;
@@ -494,7 +523,7 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
             }
         }
 
-        if (!IsBotSession() && !m_Socket[CONNECTION_TYPE_REALM])
+        if (!m_Socket[CONNECTION_TYPE_REALM])
             return false;                                       //Will remove this session from the world session map
     }
 
@@ -599,8 +628,6 @@ void WorldSession::LogoutPlayer(bool save)
             _player->SaveToDB();
         }
 
-        ObjectGuid logoutPlayerGUID = _player->GetGUID();
-
         ///- Leave all channels before player delete...
         _player->CleanupChannels();
 
@@ -617,8 +644,6 @@ void WorldSession::LogoutPlayer(bool save)
         {
             _player->GetGroup()->SendUpdate();
             _player->GetGroup()->ResetMaxEnchantingLevel();
-            if (!IsBotSession())
-                sPlayerBotMgr->LogoutAllGroupPlayerBot(_player->GetGroup(), false);
         }
 
         //! Broadcast a logout message to the player's friends
@@ -653,10 +678,6 @@ void WorldSession::LogoutPlayer(bool save)
         stmt->setUInt32(0, GetAccountId());
         CharacterDatabase.Execute(stmt);
 
-        if (IsBotSession())
-            sPlayerBotMgr->OnPlayerBotLogout(this);
-        else
-            sFieldBotMgr->OnRealPlayerLogout(logoutPlayerGUID);
         sOnlineMgr->CharaterOffline(GetAccountId());
     }
 

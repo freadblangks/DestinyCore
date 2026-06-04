@@ -225,6 +225,9 @@ BaseLocation DBUpdater<T>::GetBaseLocationType()
 template<class T>
 bool DBUpdater<T>::Create(DatabaseWorkerPool<T>& pool)
 {
+    if (!DBUpdaterUtil::CheckExecutable())
+        return false;
+
     TC_LOG_INFO("sql.updates", "Database \"%s\" does not exist, do you want to create it? [yes (default) / no]: ",
         pool.GetConnectionInfo()->database.c_str());
 
@@ -397,9 +400,6 @@ void DBUpdater<T>::ApplyFile(DatabaseWorkerPool<T>& pool, std::string const& hos
 {
     std::vector<std::string> args;
     args.reserve(8);
-
-    // args[0] represents the program name
-    args.push_back("mysql");
 
     // CLI Client connection info
     args.push_back("-h" + host);

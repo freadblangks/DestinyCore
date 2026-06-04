@@ -81,7 +81,6 @@ target_include_directories(common
 if (WITH_CPR)
     target_link_libraries(common
       PRIVATE
-        process
         trinity-core-interface
       PUBLIC
         boost
@@ -98,7 +97,6 @@ if (WITH_CPR)
 else()
     target_link_libraries(common
       PRIVATE
-        process
         trinity-core-interface
       PUBLIC
         boost
@@ -114,6 +112,12 @@ else()
 endif()
 
 add_dependencies(common revision_data.h)
+
+if (ELUNA)
+  target_link_libraries(common
+    PUBLIC
+      lualib)
+endif()
 
 set_target_properties(common
     PROPERTIES

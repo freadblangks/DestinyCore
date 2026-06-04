@@ -31,8 +31,9 @@
 #include "World.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
-#include "PlayerBotSession.h"
-#include "BotGroupAI.h"
+#ifdef ELUNA
+#include "LuaEngine.h"
+#endif
 
 class Aura;
 
@@ -107,17 +108,6 @@ void WorldSession::HandlePartyInviteOpcode(WorldPackets::Party::PartyInviteClien
     {
         SendPartyResult(PARTY_OP_INVITE, player->GetName(), ERR_IGNORING_YOU_S);
         return;
-    }
-
-    WorldSession* pWorldSession = player->GetSession();
-    if (pWorldSession && player->IsPlayerBot())
-    {
-        PlayerBotSession* pSession = dynamic_cast<PlayerBotSession*>(pWorldSession);
-        if (pSession->HasSchedules())
-        {
-            SendPartyResult(PARTY_OP_INVITE, player->GetName(), ERR_NOT_IN_GROUP);
-            return;
-        }
     }
 
     Group* group = GetPlayer()->GetGroup();
@@ -220,6 +210,12 @@ void WorldSession::HandlePartyInviteResponseOpcode(WorldPackets::Party::PartyInv
             return;
         }
 
+#ifdef ELUNA
+        if (Eluna* e = sWorld->GetEluna())
+            if (!e->OnMemberAccept(group, GetPlayer()))
+                return;
+#endif
+
         Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
 
         // Forming a new group, create it
@@ -307,8 +303,6 @@ void WorldSession::HandleSetPartyLeaderOpcode(WorldPackets::Party::SetPartyLeade
         return;
 
     if (!group->IsLeader(GetPlayer()->GetGUID()) || player->GetGroup() != group)
-        return;
-    if (player->IsPlayerBot())
         return;
 
     // Everything's fine, accepted.
@@ -578,21 +572,6 @@ void WorldSession::HandleDoReadyCheckOpcode(WorldPackets::Party::DoReadyCheck& p
 
     // everything's fine, do it
     group->StartReadyCheck(GetPlayer()->GetGUID(), packet.PartyIndex);
-
-    Group::MemberSlotList const& memList = group->GetMemberSlots();
-    for (Group::MemberSlot const& slot : memList)
-    {
-        Player* player = ObjectAccessor::FindPlayer(slot.guid);
-        if (!player || !player->IsAlive() || !player->IsPlayerBot() || !player->IsInWorld())
-            continue;
-        WorldPackets::Party::ReadyCheckResponse response;
-        response.PartyGUID = group->GetGUID();
-        response.Player = player->GetGUID();
-        response.IsReady = true;
-        group->BroadcastReadyCheck(response.Write());
-        if (BotGroupAI* pAI = dynamic_cast<BotGroupAI*>(player->GetAI()))
-            pAI->ResetBotAI();
-    }
 }
 
 void WorldSession::HandleReadyCheckResponseOpcode(WorldPackets::Party::ReadyCheckResponseClient& packet)

@@ -36,6 +36,10 @@
 #include "Player.h"
 #include "Unit.h"
 
+#ifdef ELUNA
+#include "LuaEngine.h"
+#endif
+
 struct VisibleAchievementCheck
 {
     AchievementEntry const* operator()(std::pair<uint32, CompletedAchievementData> const& val)
@@ -491,9 +495,6 @@ void PlayerAchievementMgr::CompletedAchievement(AchievementEntry const* achievem
 
     if (achievement->Flags & (ACHIEVEMENT_FLAG_REALM_FIRST_REACH | ACHIEVEMENT_FLAG_REALM_FIRST_KILL))
     {
-        if (referencePlayer->IsPlayerBot())
-            return;
-
         if (sAchievementMgr->IsRealmCompleted(achievement))
             return;
     }
@@ -513,9 +514,6 @@ void PlayerAchievementMgr::CompletedAchievement(AchievementEntry const* achievem
 
     if (achievement->Flags & (ACHIEVEMENT_FLAG_REALM_FIRST_REACH | ACHIEVEMENT_FLAG_REALM_FIRST_KILL))
     {
-        if (referencePlayer->IsPlayerBot())
-            return;
-
         sAchievementMgr->SetRealmCompleted(achievement);
     }
 
@@ -545,6 +543,11 @@ void PlayerAchievementMgr::CompletedAchievement(AchievementEntry const* achievem
     default:
         break;
     }
+
+#ifdef ELUNA
+    if (Eluna* e = _owner->GetEluna())
+        e->OnAchievementComplete(_owner, achievement->ID);
+#endif
 
     // reward items and titles if any
     AchievementReward const* reward = sAchievementMgr->GetAchievementReward(achievement);
@@ -963,9 +966,6 @@ void GuildAchievementMgr::CompletedAchievement(AchievementEntry const* achieveme
 
     if (achievement->Flags & (ACHIEVEMENT_FLAG_REALM_FIRST_REACH | ACHIEVEMENT_FLAG_REALM_FIRST_KILL))
     {
-        if (referencePlayer->IsPlayerBot())
-            return;
-
         sAchievementMgr->SetRealmCompleted(achievement);
     }
 

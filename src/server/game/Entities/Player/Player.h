@@ -21,7 +21,6 @@
 #include "Arena.h"
 #include "ArenaHelper.h"
 #include "ArchaeologyPlayerMgr.h"
-#include "PlayerBotSetting.h"
 #include "Unit.h"
 #include "CUFProfile.h"
 #include "DatabaseEnvFwd.h"
@@ -42,7 +41,6 @@
 #include "TaskScheduler.h"
 #include "Conversation.h"
 
-struct AccessRequirement;
 struct AchievementEntry;
 struct AreaTableEntry;
 struct AreaTriggerEntry;
@@ -86,7 +84,6 @@ class LootStore;
 class OutdoorPvP;
 class Pet;
 class PetAura;
-class PlayerBotSetting;
 class PlayerAchievementMgr;
 class PlayerMenu;
 class PlayerSocial;
@@ -1177,25 +1174,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         explicit Player(WorldSession* session);
         ~Player();
 
-        bool m_bot;
-        int32 FakerMoveTimer;
-
         PlayerAI* AI() const { return reinterpret_cast<PlayerAI*>(i_AI); }
-
-        uint32 FindTalentType();
-        bool AIEquipItem(uint32 entry);
-        bool CheckNeedTenacityFlush();
-        bool ResetPlayerToLevel(uint32 level, uint32 talent = 3, bool needTenacity = false);
-        bool IsSettingFinish();
-        void SupplementAmmo();
-        void OnLevelupToBotAI();
-        uint32 ReupdateTalents();
-        uint32 SwitchTalent(uint32 talent);
-        PlayerBotSetting* m_PlayerBotSetting;
-        bool IsTankPlayer();
-        int32 GetEquipCombatPower() { return m_EquipCombatPower; }
-        void FlushEquipCombatPower(uint8 eSlot, bool apply, const ItemTemplate* pEquipTemplate);
-        bool EquipIsTidiness();
 
         void CleanupsBeforeDelete(bool finalCleanup = true) override;
 
@@ -1565,6 +1544,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         bool CanSelectQuestPackageItem(QuestPackageItemEntry const* questPackageItem) const;
         void RewardQuestPackage(uint32 questPackageId, uint32 onlyItemId = 0);
         void RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, bool announce = true);
+        void ApplyQuestActions(uint32 questId, uint8 type, uint8 objectiveIndex = 0);
         void SetRewardedQuest(uint32 quest_id);
         void FailQuest(uint32 quest_id);
         bool SatisfyQuestSkill(Quest const* qInfo, bool msg) const;
@@ -2518,7 +2498,7 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         void SetPendingBind(uint32 instanceId, uint32 bindTimer);
         bool HasPendingBind() const { return _pendingBindId > 0; }
         void SendRaidInfo();
-        bool Satisfy(AccessRequirement const* ar, uint32 target_map, bool report = false);
+        bool Satisfy(uint32 target_map, Difficulty difficulty, bool report = false);
         bool CheckInstanceValidity(bool /*isLogin*/);
         bool CheckInstanceCount(uint32 instanceId) const;
         void AddInstanceEnterTime(uint32 instanceId, time_t enterTime);
@@ -3129,8 +3109,6 @@ class TC_GAME_API Player : public Unit, public GridObject<Player>
         uint32 manaBeforeDuel;
 
         WorldLocation _corpseLocation;
-
-        int32 m_EquipCombatPower;
 
         SceneMgr m_sceneMgr;
 

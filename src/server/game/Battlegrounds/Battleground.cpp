@@ -43,8 +43,10 @@
 #include "WorldStatePackets.h"
 #include "CreatureAIImpl.h"
 #include <cstdarg>
-#include "PlayerBotMgr.h"
-#include "CommandBG.h"
+
+#ifdef ELUNA
+#include "LuaEngine.h"
+#endif
 
 template<class Do>
 void Battleground::BroadcastWorker(Do& _do)
@@ -130,6 +132,11 @@ Battleground::Battleground()
 
 Battleground::~Battleground()
 {
+#ifdef ELUNA
+    if(m_Map)
+        if (Eluna* e = m_Map->GetEluna())
+            e->OnBGDestroy(this, GetTypeID(), GetInstanceID());
+#endif
     // remove objects and creatures
     // (this is done automatically in mapmanager update, when the instance is reset after the reset time)
     uint32 size = uint32(BgCreatures.size());
@@ -341,14 +348,6 @@ inline void Battleground::_ProcessResurrect(uint32 diff)
             player->CastSpell(player, 6962, true);
             player->CastSpell(player, SPELL_SPIRIT_HEAL_MANA, true);
             player->SpawnCorpseBones(false);
-
-            BattlegroundMap* pBGMap = GetBgMap();
-            if (pBGMap)
-            {
-                CommandBG* pCommander = pBGMap->GetCommander(player->GetTeamId());
-                if (pCommander)
-                    pCommander->OnPlayerRevive(player);
-            }
         }
         m_ResurrectQueue.clear();
     }
@@ -467,8 +466,6 @@ inline void Battleground::_ProcessJoin(uint32 diff)
         m_Events |= BG_STARTING_EVENT_2;
         if (StartMessageIds[BG_STARTING_EVENT_SECOND])
             SendBroadcastText(StartMessageIds[BG_STARTING_EVENT_SECOND], CHAT_MSG_BG_SYSTEM_NEUTRAL);
-        m_Map->InsureCommander(GetTypeID());
-        m_Map->ReadyCommander();
     }
     // After 30 or 15 seconds, warning is signaled
     else if (GetStartDelayTime() <= StartDelayTimes[BG_STARTING_EVENT_THIRD] && !(m_Events & BG_STARTING_EVENT_3))
@@ -476,8 +473,6 @@ inline void Battleground::_ProcessJoin(uint32 diff)
         m_Events |= BG_STARTING_EVENT_3;
         if (StartMessageIds[BG_STARTING_EVENT_THIRD])
             SendBroadcastText(StartMessageIds[BG_STARTING_EVENT_THIRD], CHAT_MSG_BG_SYSTEM_NEUTRAL);
-        m_Map->InsureCommander(GetTypeID());
-        m_Map->ReadyCommander();
     }
     // Delay expired (after 2 or 1 minute)
     else if (GetStartDelayTime() <= 0 && !(m_Events & BG_STARTING_EVENT_4))
@@ -485,6 +480,11 @@ inline void Battleground::_ProcessJoin(uint32 diff)
         m_Events |= BG_STARTING_EVENT_4;
 
         StartingEventOpenDoors();
+
+#ifdef ELUNA
+        if (Eluna* e = GetBgMap()->GetEluna())
+            e->OnBGStart(this, GetTypeID(), GetInstanceID());
+#endif
 
         if (StartMessageIds[BG_STARTING_EVENT_FOURTH])
             SendBroadcastText(StartMessageIds[BG_STARTING_EVENT_FOURTH], CHAT_MSG_BG_SYSTEM_NEUTRAL);
@@ -933,17 +933,12 @@ void Battleground::EndBattleground(uint32 winner)
         player->SendDirectMessage(battlefieldStatus.Write());
 
         player->UpdateCriteria(CRITERIA_TYPE_COMPLETE_BATTLEGROUND, 1);
-
-        if (player->IsPlayerBot())
-        {
-            PlayerBotSession* pSession = dynamic_cast<PlayerBotSession*>((WorldSession*)player->GetSession());
-            if (pSession)
-            {
-                BotGlobleSchedule schedule1(BotGlobleScheduleType::BGSType_LeaveBG, 0);
-                pSession->PushScheduleToQueue(schedule1);
-            }
-        }
     }
+#ifdef ELUNA
+    //the type of the winner,change Team to BattlegroundTeamId,it could be better.
+    if (Eluna* e = GetBgMap()->GetEluna())
+        e->OnBGEnd(this, GetTypeID(), GetInstanceID(), Team(winner));
+#endif
 }
 
 uint32 Battleground::GetBonusHonorFromKill(uint32 kills) const
@@ -1098,12 +1093,6 @@ void Battleground::Reset()
         delete itr->second;
     PlayerScores.clear();
 
-    if (m_Map)
-    {
-        m_Map->InsureCommander(GetTypeID());
-        m_Map->ResetCommander();
-    }
-
     ResetBGSubclass();
 }
 
@@ -1118,12 +1107,6 @@ void Battleground::StartBattleground()
     // This must be done here, because we need to have already invited some players when first BG::Update() method is executed
     // and it doesn't matter if we call StartBattleground() more times, because m_Battlegrounds is a map and instance id never changes
     sBattlegroundMgr->AddBattleground(this);
-
-    if (m_Map)
-    {
-        m_Map->InsureCommander(GetTypeID());
-        m_Map->InitCommander();
-    }
 
     if (m_IsRated)
         TC_LOG_DEBUG("bg.arena", "Arena match type: %u for Team1Id: %u - Team2Id: %u started.", m_ArenaType, m_ArenaGroupIds[TEAM_ALLIANCE], m_ArenaGroupIds[TEAM_HORDE]);
@@ -1510,11 +1493,6 @@ void Battleground::RelocateDeadPlayers(ObjectGuid guideGuid)
             if (closestGrave)
             {
                 player->TeleportTo(GetMapId(), closestGrave->Loc.X, closestGrave->Loc.Y, closestGrave->Loc.Z, player->GetOrientation());
-                if (player->IsPlayerBot())
-                {
-                    //needInNewQueuePlayers.push_back(player);
-                    player->UpdatePosition(closestGrave->Loc.X, closestGrave->Loc.Y, closestGrave->Loc.Z, player->GetOrientation(), true);
-                }
             }
         }
         ghostList.clear();
@@ -2033,7 +2011,7 @@ bool Battleground::ExistRealPlayer()
         itPlayer++)
     {
         Player* player = ObjectAccessor::FindConnectedPlayer(itPlayer->first);
-        if (player && !player->IsPlayerBot())
+        if (player)
         {
             return true;
         }
