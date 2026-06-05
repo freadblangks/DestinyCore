@@ -16,6 +16,7 @@
 
 #if defined USING_BOOST
 #include <boost/filesystem.hpp>
+#include <boost/filesystem/directory.hpp>
 namespace fs = boost::filesystem;
 #else
 #include <filesystem>

@@ -50,6 +50,7 @@ ScriptReloadMgr* ScriptReloadMgr::instance()
 #include "World.h"
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/filesystem/directory.hpp>
 #include <boost/system/system_error.hpp>
 #include <efsw/efsw.hpp>
 #include <algorithm>
